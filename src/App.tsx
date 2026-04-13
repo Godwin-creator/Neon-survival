@@ -6,9 +6,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import { motion, AnimatePresence } from 'motion/react';
+import { Pause, Play, Settings, User as UserIcon, Trophy, Edit2, Check, X, Volume2, VolumeX, Info } from 'lucide-react';
 import { auth, db, signInWithGoogle, logOut } from './firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, addDoc, query, orderBy, limit, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { onAuthStateChanged, User, updateProfile } from 'firebase/auth';
+import { collection, addDoc, query, orderBy, limit, onSnapshot, serverTimestamp, where, getDocs } from 'firebase/firestore';
 
 // --- Game Entities ---
 
@@ -31,12 +32,28 @@ class Player {
     this.speedTimer = 0;
   }
 
-  update(mouseX: number, mouseY: number) {
-    // Smooth follow
-    const lerp = this.speedTimer > 0 ? 0.3 : 0.1;
-    this.x += (mouseX - this.x) * lerp;
-    this.y += (mouseY - this.y) * lerp;
-    this.angle = Math.atan2(mouseY - this.y, mouseX - this.x);
+  update(mouseX: number, mouseY: number, joystick: { active: boolean, dx: number, dy: number }, isAiming: boolean) {
+    if (joystick.active) {
+      const speed = this.speedTimer > 0 ? 8 : 5;
+      this.x += joystick.dx * speed;
+      this.y += joystick.dy * speed;
+      
+      // Clamp to screen bounds
+      this.x = Math.max(this.size, Math.min(window.innerWidth - this.size, this.x));
+      this.y = Math.max(this.size, Math.min(window.innerHeight - this.size, this.y));
+      
+      if (isAiming) {
+        this.angle = Math.atan2(mouseY - this.y, mouseX - this.x);
+      } else if (joystick.dx !== 0 || joystick.dy !== 0) {
+        this.angle = Math.atan2(joystick.dy, joystick.dx);
+      }
+    } else {
+      // Smooth follow
+      const lerp = this.speedTimer > 0 ? 0.3 : 0.1;
+      this.x += (mouseX - this.x) * lerp;
+      this.y += (mouseY - this.y) * lerp;
+      this.angle = Math.atan2(mouseY - this.y, mouseX - this.x);
+    }
     
     if (this.shieldTimer > 0) this.shieldTimer--;
     if (this.spreadTimer > 0) this.spreadTimer--;
@@ -112,6 +129,7 @@ class Projectile {
 }
 
 type PowerUpType = 'shield' | 'spread' | 'speed';
+type Difficulty = 'easy' | 'medium' | 'hard';
 
 class PowerUp {
   x: number;
@@ -190,6 +208,7 @@ class Enemy {
   angle: number;
   state: number;
   stateTimer: number;
+  hitFlash: number;
 
   constructor(x: number, y: number, speed: number, type: EnemyType) {
     this.x = x;
@@ -199,6 +218,7 @@ class Enemy {
     this.angle = 0;
     this.state = 0;
     this.stateTimer = 0;
+    this.hitFlash = 0;
 
     switch (type) {
       case 'boss':
@@ -285,13 +305,15 @@ class Enemy {
   draw(ctx: CanvasRenderingContext2D) {
     ctx.save();
     ctx.shadowBlur = 15;
-    ctx.shadowColor = this.color;
-    ctx.strokeStyle = this.color;
+    ctx.shadowColor = this.hitFlash > 0 ? '#ffffff' : this.color;
+    ctx.strokeStyle = this.hitFlash > 0 ? '#ffffff' : this.color;
     ctx.lineWidth = 2;
     ctx.translate(this.x, this.y);
 
     const hpRatio = this.hp / this.maxHp;
     ctx.globalAlpha = 0.4 + 0.6 * hpRatio;
+
+    let fillColor = this.hitFlash > 0 ? '#ffffff' : this.color;
 
     if (this.type === 'boss') {
       ctx.rotate(this.tick * 0.02);
@@ -303,14 +325,14 @@ class Enemy {
       }
       ctx.closePath();
       ctx.stroke();
-      ctx.fillStyle = this.color;
+      ctx.fillStyle = fillColor;
       ctx.globalAlpha = 0.2 * hpRatio;
       ctx.fill();
       
       // Draw a core
       ctx.beginPath();
       ctx.arc(0, 0, this.size * 0.3, 0, Math.PI * 2);
-      ctx.fillStyle = this.state === 1 ? '#ff003c' : this.color; // Core turns red when dashing
+      ctx.fillStyle = this.hitFlash > 0 ? '#ffffff' : (this.state === 1 ? '#ff003c' : this.color); // Core turns red when dashing
       ctx.globalAlpha = 0.8;
       ctx.fill();
     } else if (this.type === 'tank') {
@@ -322,7 +344,7 @@ class Enemy {
       }
       ctx.closePath();
       ctx.stroke();
-      ctx.fillStyle = this.color;
+      ctx.fillStyle = fillColor;
       ctx.globalAlpha = 0.2 * hpRatio;
       ctx.fill();
     } else if (this.type === 'dasher') {
@@ -334,18 +356,33 @@ class Enemy {
       ctx.lineTo(-this.size, -this.size * 0.6);
       ctx.closePath();
       ctx.stroke();
+      ctx.fillStyle = fillColor;
+      ctx.globalAlpha = 0.2 * hpRatio;
+      ctx.fill();
     } else if (this.type === 'wavy') {
       ctx.rotate(this.tick * 0.05);
       ctx.beginPath();
-      ctx.moveTo(0, -this.size);
-      ctx.lineTo(this.size, 0);
-      ctx.lineTo(0, this.size);
-      ctx.lineTo(-this.size, 0);
+      for (let i = 0; i < 4; i++) {
+        const a = (Math.PI * 2 / 4) * i;
+        ctx.lineTo(Math.cos(a) * this.size, Math.sin(a) * this.size);
+      }
       ctx.closePath();
       ctx.stroke();
+      ctx.fillStyle = fillColor;
+      ctx.globalAlpha = 0.2 * hpRatio;
+      ctx.fill();
     } else {
-      ctx.rotate(this.tick * 0.05);
-      ctx.strokeRect(-this.size / 2, -this.size / 2, this.size, this.size);
+      ctx.rotate(this.angle);
+      ctx.beginPath();
+      ctx.moveTo(this.size, 0);
+      ctx.lineTo(-this.size, this.size * 0.8);
+      ctx.lineTo(-this.size * 0.4, 0);
+      ctx.lineTo(-this.size, -this.size * 0.8);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.fillStyle = fillColor;
+      ctx.globalAlpha = 0.2 * hpRatio;
+      ctx.fill();
     }
 
     ctx.restore();
@@ -396,6 +433,7 @@ class Particle {
 
 class AudioEngine {
   ctx: AudioContext | null = null;
+  masterVolume: number = 0.5;
 
   init() {
     if (!this.ctx) {
@@ -406,6 +444,10 @@ class AudioEngine {
     }
   }
 
+  setVolume(vol: number) {
+    this.masterVolume = Math.max(0, Math.min(1, vol));
+  }
+
   playShoot() {
     if (!this.ctx) return;
     const osc = this.ctx.createOscillator();
@@ -413,7 +455,7 @@ class AudioEngine {
     osc.type = 'square';
     osc.frequency.setValueAtTime(880, this.ctx.currentTime);
     osc.frequency.exponentialRampToValueAtTime(110, this.ctx.currentTime + 0.1);
-    gain.gain.setValueAtTime(0.05, this.ctx.currentTime);
+    gain.gain.setValueAtTime(0.05 * this.masterVolume, this.ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.1);
     osc.connect(gain);
     gain.connect(this.ctx.destination);
@@ -428,7 +470,7 @@ class AudioEngine {
     osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(isBoss ? 100 : 200, this.ctx.currentTime);
     osc.frequency.exponentialRampToValueAtTime(10, this.ctx.currentTime + (isBoss ? 0.5 : 0.2));
-    gain.gain.setValueAtTime(isBoss ? 0.2 : 0.05, this.ctx.currentTime);
+    gain.gain.setValueAtTime((isBoss ? 0.2 : 0.05) * this.masterVolume, this.ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + (isBoss ? 0.5 : 0.2));
     osc.connect(gain);
     gain.connect(this.ctx.destination);
@@ -445,7 +487,7 @@ class AudioEngine {
     osc.frequency.setValueAtTime(554.37, this.ctx.currentTime + 0.05);
     osc.frequency.setValueAtTime(659.25, this.ctx.currentTime + 0.1);
     osc.frequency.setValueAtTime(880, this.ctx.currentTime + 0.15);
-    gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+    gain.gain.setValueAtTime(0.1 * this.masterVolume, this.ctx.currentTime);
     gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.3);
     osc.connect(gain);
     gain.connect(this.ctx.destination);
@@ -460,7 +502,7 @@ class AudioEngine {
     osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(200, this.ctx.currentTime);
     osc.frequency.exponentialRampToValueAtTime(20, this.ctx.currentTime + 1.5);
-    gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+    gain.gain.setValueAtTime(0.2 * this.masterVolume, this.ctx.currentTime);
     gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 1.5);
     osc.connect(gain);
     gain.connect(this.ctx.destination);
@@ -475,6 +517,8 @@ const audio = new AudioEngine();
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const joystickBaseRef = useRef<HTMLDivElement>(null);
+  const joystickKnobRef = useRef<HTMLDivElement>(null);
   const [score, setScore] = useState(0);
   const [wave, setWave] = useState(1);
   const [isGameOver, setIsGameOver] = useState(false);
@@ -483,18 +527,52 @@ export default function App() {
   const [deathMessage, setDeathMessage] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [difficulty, setDifficulty] = useState<Difficulty>('medium');
+  const [currentScreen, setCurrentScreen] = useState<'home' | 'game' | 'dashboard'>('home');
+  const [isTutorial, setIsTutorial] = useState(false);
+  const [tutorialText, setTutorialText] = useState('');
+  
+  // Settings
+  const [volume, setVolume] = useState(0.5);
+  const [particlesEnabled, setParticlesEnabled] = useState(true);
+  const [shakeEnabled, setShakeEnabled] = useState(true);
+
+  // Profile
+  const [personalBest, setPersonalBest] = useState(0);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editPhotoUrl, setEditPhotoUrl] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // Apply volume
+  useEffect(() => {
+    audio.setVolume(volume);
+  }, [volume]);
 
   // Firebase Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
+      if (currentUser) {
+        setEditName(currentUser.displayName || '');
+        setEditPhotoUrl(currentUser.photoURL || '');
+        // Fetch PB
+        const fetchPB = async () => {
+          const q = query(collection(db, 'scores'), where('uid', '==', currentUser.uid), orderBy('score', 'desc'), limit(1));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            setPersonalBest(snap.docs[0].data().score);
+          }
+        };
+        fetchPB();
+      }
     });
     return () => unsubscribe();
   }, []);
 
   // Firebase Leaderboard Listener
   useEffect(() => {
-    const q = query(collection(db, 'scores'), orderBy('score', 'desc'), limit(5));
+    const q = query(collection(db, 'scores'), orderBy('score', 'desc'), limit(10));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const scoresData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setLeaderboard(scoresData);
@@ -503,6 +581,29 @@ export default function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  const handleLogin = async () => {
+    if (isLoggingIn) return;
+    setIsLoggingIn(true);
+    try {
+      await signInWithGoogle();
+    } catch (error) {
+      // Error handled in firebase.ts
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleUpdateProfile = async () => {
+    if (!user) return;
+    try {
+      await updateProfile(user, { displayName: editName, photoURL: editPhotoUrl });
+      setUser({ ...user, displayName: editName, photoURL: editPhotoUrl } as User);
+      setIsEditingProfile(false);
+    } catch (error) {
+      console.error("Error updating profile:", error);
+    }
+  };
 
   const saveScore = async (finalScore: number, finalWave: number) => {
     if (!user || finalScore === 0) return;
@@ -530,21 +631,34 @@ export default function App() {
     shake: 0,
     isGameOver: false,
     isPaused: false,
+    isGameStarted: false,
     mouseX: window.innerWidth / 2,
     mouseY: window.innerHeight / 2,
     isShooting: false,
     shootCooldown: 0,
     frames: 0,
     bossSpawnedForWave: 0,
+    bossesKilled: 0,
+    cloneTimer: 0,
+    clone: { x: window.innerWidth / 2, y: window.innerHeight / 2, angle: 0 },
+    joystick: { active: false, dx: 0, dy: 0, touchId: -1 },
+    aimTouchId: -1,
+    extraBonusDuration: 0,
+    damageFlash: 0,
+    comboCount: 0,
+    comboTimer: 0,
+    comboMessage: '',
+    comboMessageTimer: 0,
+    comboScale: 1,
   });
 
   // Fetch a snarky death message using Gemini Flash Lite
-  const fetchDeathMessage = async () => {
+  const fetchDeathMessage = async (finalScore: number, finalWave: number) => {
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const response = await ai.models.generateContent({
         model: 'gemini-3.1-flash-lite-preview',
-        contents: `Génère une phrase courte et sarcastique (max 10 mots) en français pour un joueur qui vient de mourir dans un jeu vidéo rétro néon. N'inclus pas les stats dans la phrase, juste la pique.`,
+        contents: `Génère une phrase courte, sarcastique et unique (max 15 mots) en français pour un joueur qui vient de mourir dans un jeu vidéo rétro néon. Le joueur a atteint le score de ${finalScore} à la vague ${finalWave}. Fais une pique amusante en fonction de ces statistiques.`,
       });
       setDeathMessage(response.text);
     } catch (err) {
@@ -553,6 +667,8 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (currentScreen !== 'game') return;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -571,8 +687,13 @@ export default function App() {
     let animationId: number;
 
     // Reset State
+    const player = new Player(canvas.width / 2, canvas.height / 2);
+    if (difficulty === 'easy') {
+      player.shieldTimer = 600; // Start with shield on easy
+    }
+
     gameState.current = {
-      player: new Player(canvas.width / 2, canvas.height / 2),
+      player,
       projectiles: [],
       enemies: [],
       powerUps: [],
@@ -582,12 +703,22 @@ export default function App() {
       shake: 0,
       isGameOver: false,
       isPaused: false,
+      isGameStarted: true,
       mouseX: canvas.width / 2,
       mouseY: canvas.height / 2,
       isShooting: false,
       shootCooldown: 0,
       frames: 0,
       bossSpawnedForWave: 0,
+      joystick: { active: false, dx: 0, dy: 0, touchId: -1 },
+      aimTouchId: -1,
+      extraBonusDuration: 0,
+      damageFlash: 0,
+      comboCount: 0,
+      comboTimer: 0,
+      comboMessage: '',
+      comboMessageTimer: 0,
+      comboScale: 1,
     };
 
     const spawnEnemy = () => {
@@ -610,7 +741,8 @@ export default function App() {
         x = Math.random() * canvas.width;
         y = Math.random() < 0.5 ? -30 : canvas.height + 30;
       }
-      const speed = 1 + Math.random() * (wave * 0.3);
+      const speedMultiplier = difficulty === 'easy' ? 0.7 : difficulty === 'hard' ? 1.5 : 1.0;
+      const speed = (1 + Math.random() * (wave * 0.3)) * speedMultiplier;
 
       let type: EnemyType = 'chaser';
       const rand = Math.random();
@@ -633,6 +765,7 @@ export default function App() {
     };
 
     const createExplosion = (x: number, y: number, color: string, count: number) => {
+      if (!particlesEnabled) return;
       for (let i = 0; i < count; i++) {
         gameState.current.particles.push(new Particle(x, y, color));
       }
@@ -669,15 +802,63 @@ export default function App() {
       // Screen shake
       if (state.shake > 0) {
         ctx.save();
-        const dx = (Math.random() - 0.5) * state.shake;
-        const dy = (Math.random() - 0.5) * state.shake;
-        ctx.translate(dx, dy);
+        if (shakeEnabled) {
+          const dx = (Math.random() - 0.5) * state.shake;
+          const dy = (Math.random() - 0.5) * state.shake;
+          ctx.translate(dx, dy);
+        }
       }
 
       // Player
       if (state.player) {
-        state.player.update(state.mouseX, state.mouseY);
+        const isAiming = state.aimTouchId !== -1 || (!state.joystick.active && state.isShooting);
+        state.player.update(state.mouseX, state.mouseY, state.joystick, isAiming);
         state.player.draw(ctx);
+
+        // Clone logic
+        if (state.cloneTimer > 0) {
+          state.cloneTimer--;
+          const targetX = state.player.x - Math.cos(state.player.angle) * 40;
+          const targetY = state.player.y - Math.sin(state.player.angle) * 40;
+          state.clone.x += (targetX - state.clone.x) * 0.1;
+          state.clone.y += (targetY - state.clone.y) * 0.1;
+
+          let nearestEnemy = null;
+          let minDist = Infinity;
+          for (const e of state.enemies) {
+            const dist = Math.hypot(e.x - state.clone.x, e.y - state.clone.y);
+            if (dist < minDist) {
+              minDist = dist;
+              nearestEnemy = e;
+            }
+          }
+
+          if (nearestEnemy) {
+            state.clone.angle = Math.atan2(nearestEnemy.y - state.clone.y, nearestEnemy.x - state.clone.x);
+          } else {
+            state.clone.angle = state.player.angle;
+          }
+
+          ctx.save();
+          ctx.translate(state.clone.x, state.clone.y);
+          ctx.rotate(state.clone.angle);
+          ctx.strokeStyle = '#00ff44';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(15, 0);
+          ctx.lineTo(-10, 10);
+          ctx.lineTo(-10, -10);
+          ctx.closePath();
+          ctx.stroke();
+          
+          if (state.player.shieldTimer > 0) {
+            ctx.beginPath();
+            ctx.arc(0, 0, 25, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(0, 243, 255, ${Math.min(1, state.player.shieldTimer / 60)})`;
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
 
         // Speed Trail
         if (state.player.speedTimer > 0 && state.frames % 2 === 0) {
@@ -695,9 +876,17 @@ export default function App() {
             state.projectiles.push(new Projectile(state.player.x, state.player.y, state.player.angle));
             state.projectiles.push(new Projectile(state.player.x, state.player.y, state.player.angle - 0.25));
             state.projectiles.push(new Projectile(state.player.x, state.player.y, state.player.angle + 0.25));
+            if (state.cloneTimer > 0) {
+              state.projectiles.push(new Projectile(state.clone.x, state.clone.y, state.clone.angle));
+              state.projectiles.push(new Projectile(state.clone.x, state.clone.y, state.clone.angle - 0.25));
+              state.projectiles.push(new Projectile(state.clone.x, state.clone.y, state.clone.angle + 0.25));
+            }
             state.shootCooldown = 6;
           } else {
             state.projectiles.push(new Projectile(state.player.x, state.player.y, state.player.angle));
+            if (state.cloneTimer > 0) {
+              state.projectiles.push(new Projectile(state.clone.x, state.clone.y, state.clone.angle));
+            }
             state.shootCooldown = 8;
           }
         }
@@ -715,17 +904,42 @@ export default function App() {
       }
 
       // Spawning logic
-      const isBossAlive = state.enemies.some(e => e.type === 'boss');
-      const spawnRate = isBossAlive ? 120 : Math.max(15, 80 - state.wave * 5);
-      
-      if (state.frames % spawnRate === 0) {
-        spawnEnemy();
+      if (!isTutorial || state.frames > 600) {
+        const isBossAlive = state.enemies.some(e => e.type === 'boss');
+        const spawnRateMultiplier = difficulty === 'easy' ? 1.5 : difficulty === 'hard' ? 0.7 : 1.0;
+        const baseSpawnRate = Math.max(15, 80 - state.wave * 5);
+        const spawnRate = isBossAlive ? 120 : Math.floor(baseSpawnRate * spawnRateMultiplier);
+        
+        if (state.frames % spawnRate === 0) {
+          spawnEnemy();
+        }
+      }
+
+      // Tutorial Logic
+      if (isTutorial) {
+        if (state.frames < 180) setTutorialText("Utilisez le joystick ou glissez pour vous déplacer.");
+        else if (state.frames < 360) setTutorialText("Touchez l'écran pour tirer dans cette direction.");
+        else if (state.frames < 600) setTutorialText("Survivez aux vagues d'ennemis !");
+        else if (state.frames > 1200) setIsTutorial(false);
+      } else {
+        setTutorialText('');
       }
 
       // Wave progression
       if (state.score >= state.wave * 500) {
         state.wave++;
         setWave(state.wave);
+        
+        const extraSeconds = Math.random() < 0.5 ? 10 : 5;
+        state.extraBonusDuration += extraSeconds * 60;
+        
+        if (state.player) {
+          audio.playPowerUp();
+          state.player.shieldTimer = Math.max(state.player.shieldTimer, 0) + 600 + state.extraBonusDuration;
+          state.player.spreadTimer = Math.max(state.player.spreadTimer, 0) + 420 + state.extraBonusDuration;
+          state.player.speedTimer = Math.max(state.player.speedTimer, 0) + 420 + state.extraBonusDuration;
+          createExplosion(state.player.x, state.player.y, '#ffffff', 30);
+        }
       }
 
       // PowerUps
@@ -738,9 +952,9 @@ export default function App() {
           const dist = Math.hypot(state.player.x - pu.x, state.player.y - pu.y);
           if (dist < state.player.size + pu.size) {
             audio.playPowerUp();
-            if (pu.type === 'shield') state.player.shieldTimer = 600;
-            if (pu.type === 'spread') state.player.spreadTimer = 420;
-            if (pu.type === 'speed') state.player.speedTimer = 420;
+            if (pu.type === 'shield') state.player.shieldTimer = 600 + state.extraBonusDuration;
+            if (pu.type === 'spread') state.player.spreadTimer = 420 + state.extraBonusDuration;
+            if (pu.type === 'speed') state.player.speedTimer = 420 + state.extraBonusDuration;
             state.powerUps.splice(i, 1);
             createExplosion(pu.x, pu.y, pu.type === 'shield' ? '#0055ff' : pu.type === 'spread' ? '#ff00ff' : '#ffff00', 15);
             continue;
@@ -756,6 +970,7 @@ export default function App() {
       for (let i = state.enemies.length - 1; i >= 0; i--) {
         const e = state.enemies[i];
         if (state.player) e.update(state.player.x, state.player.y);
+        if (e.hitFlash > 0) e.hitFlash--;
         e.draw(ctx);
 
         // Player collision
@@ -767,14 +982,16 @@ export default function App() {
               state.enemies.splice(i, 1);
               createExplosion(e.x, e.y, e.color, 20);
               state.shake = 5;
+              state.damageFlash = 1.0;
               state.player.shieldTimer = 0; // Shield breaks
               continue;
             } else {
               audio.playGameOver();
               state.isGameOver = true;
+              state.damageFlash = 1.0;
               createExplosion(state.player.x, state.player.y, '#00f3ff', 50);
               setIsGameOver(true);
-              fetchDeathMessage();
+              fetchDeathMessage(state.score, state.wave);
               saveScore(state.score, state.wave);
             }
           }
@@ -786,6 +1003,7 @@ export default function App() {
           const dist = Math.hypot(p.x - e.x, p.y - e.y);
           if (dist < e.size) {
             e.hp--;
+            e.hitFlash = 5;
             state.projectiles.splice(j, 1);
             createExplosion(p.x, p.y, e.color, 5); // Small hit explosion
 
@@ -798,6 +1016,32 @@ export default function App() {
               state.shake = e.type === 'boss' ? 30 : e.type === 'tank' ? 15 : 8;
               createExplosion(e.x, e.y, e.color, e.type === 'boss' ? 100 : e.type === 'tank' ? 30 : 15);
               
+              // Combo logic
+              state.comboCount++;
+              state.comboTimer = 120; // 2 seconds to keep combo
+              if (state.comboCount > 1) {
+                state.comboMessageTimer = 90;
+                state.comboScale = 2.0;
+                switch (state.comboCount) {
+                  case 2: state.comboMessage = "DOUBLE KILL"; break;
+                  case 3: state.comboMessage = "TRIPLE KILL"; break;
+                  case 4: state.comboMessage = "QUAD KILL"; break;
+                  case 5: state.comboMessage = "PENTA KILL"; break;
+                  default: state.comboMessage = "RAMPAGE!"; break;
+                }
+              }
+
+              if (e.type === 'boss') {
+                state.bossesKilled++;
+                if (state.bossesKilled === 1) {
+                  state.cloneTimer = 180 * 60; // 3 minutes at 60fps
+                  if (state.player) {
+                    state.clone.x = state.player.x;
+                    state.clone.y = state.player.y;
+                  }
+                }
+              }
+
               // PowerUp drop
               if (Math.random() < 0.1 || e.type === 'boss') {
                 const types: PowerUpType[] = ['shield', 'spread', 'speed'];
@@ -825,6 +1069,42 @@ export default function App() {
         ctx.restore();
         state.shake *= 0.9;
         if (state.shake < 0.5) state.shake = 0;
+      }
+
+      // Combo timers
+      if (state.comboTimer > 0) {
+        state.comboTimer--;
+        if (state.comboTimer <= 0) state.comboCount = 0;
+      }
+      if (state.comboMessageTimer > 0) {
+        state.comboMessageTimer--;
+        if (state.comboScale > 1) state.comboScale -= 0.1;
+        
+        ctx.save();
+        ctx.translate(canvas.width / 2, canvas.height / 4);
+        ctx.scale(state.comboScale, state.comboScale);
+        
+        let comboColor = '#ff00ff';
+        if (state.comboCount >= 5) comboColor = '#ff003c';
+        else if (state.comboCount === 4) comboColor = '#ffff00';
+        else if (state.comboCount === 3) comboColor = '#00ff44';
+
+        ctx.fillStyle = comboColor;
+        ctx.font = '900 40px Inter';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = comboColor;
+        ctx.globalAlpha = Math.min(1, state.comboMessageTimer / 30);
+        ctx.fillText(state.comboMessage, 0, 0);
+        ctx.restore();
+      }
+
+      // Damage flash
+      if (state.damageFlash > 0) {
+        ctx.fillStyle = `rgba(255, 0, 60, ${state.damageFlash * 0.5})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        state.damageFlash -= 0.05;
       }
 
       // Draw PowerUp UI
@@ -867,7 +1147,7 @@ export default function App() {
       window.removeEventListener('resize', handleResize);
       cancelAnimationFrame(animationId);
     };
-  }, [gameId]);
+  }, [gameId, currentScreen, difficulty, isTutorial, particlesEnabled, shakeEnabled]);
 
   // Input Listeners
   useEffect(() => {
@@ -877,6 +1157,7 @@ export default function App() {
     };
     const handleMouseDown = () => {
       audio.init();
+      if (!gameState.current.isGameStarted) return;
       if (gameState.current.isGameOver) return;
       if (gameState.current.isPaused) {
         gameState.current.isPaused = false;
@@ -884,12 +1165,53 @@ export default function App() {
       }
       gameState.current.isShooting = true;
     };
-    const handleMouseUp = () => { gameState.current.isShooting = false; };
+    const handleMouseUp = () => { 
+      if (!gameState.current.joystick.active) {
+        gameState.current.isShooting = false; 
+      }
+    };
     const handleKeyDown = (e: KeyboardEvent) => {
       audio.init();
+      if (!gameState.current.isGameStarted) return;
       if (e.key.toLowerCase() === 'p' && !gameState.current.isGameOver) {
         gameState.current.isPaused = !gameState.current.isPaused;
         setIsPaused(gameState.current.isPaused);
+      }
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      audio.init();
+      if (!gameState.current.isGameStarted || gameState.current.isGameOver || gameState.current.isPaused) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier !== gameState.current.joystick.touchId) {
+          gameState.current.aimTouchId = t.identifier;
+          gameState.current.mouseX = t.clientX;
+          gameState.current.mouseY = t.clientY;
+          gameState.current.isShooting = true;
+        }
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === gameState.current.aimTouchId) {
+          gameState.current.mouseX = t.clientX;
+          gameState.current.mouseY = t.clientY;
+        }
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === gameState.current.aimTouchId) {
+          gameState.current.aimTouchId = -1;
+          if (!gameState.current.joystick.active) {
+            gameState.current.isShooting = false;
+          }
+        }
       }
     };
 
@@ -897,22 +1219,98 @@ export default function App() {
     window.addEventListener('mousedown', handleMouseDown);
     window.addEventListener('mouseup', handleMouseUp);
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('touchstart', handleTouchStart, { passive: false });
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
+    window.addEventListener('touchend', handleTouchEnd);
+    window.addEventListener('touchcancel', handleTouchEnd);
 
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mousedown', handleMouseDown);
       window.removeEventListener('mouseup', handleMouseUp);
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('touchcancel', handleTouchEnd);
     };
   }, []);
 
-  const handleRestart = () => {
+  const startGame = (selectedDifficulty: Difficulty, tutorial = false) => {
+    setDifficulty(selectedDifficulty);
+    setIsTutorial(tutorial);
+    setCurrentScreen('game');
     setScore(0);
     setWave(1);
     setIsGameOver(false);
     setIsPaused(false);
     setDeathMessage(null);
     setGameId((id) => id + 1);
+  };
+
+  const handleRestart = () => {
+    setIsGameOver(false);
+    setCurrentScreen('home');
+  };
+
+  // Joystick Handlers
+  const updateJoyPos = (clientX: number, clientY: number) => {
+    if (!joystickBaseRef.current || !joystickKnobRef.current) return;
+    const rect = joystickBaseRef.current.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    let dx = clientX - centerX;
+    let dy = clientY - centerY;
+    const maxDist = rect.width / 2;
+    const dist = Math.hypot(dx, dy);
+    
+    if (dist > maxDist) {
+      dx = (dx / dist) * maxDist;
+      dy = (dy / dist) * maxDist;
+    }
+    
+    joystickKnobRef.current.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    gameState.current.joystick.dx = dx / maxDist;
+    gameState.current.joystick.dy = dy / maxDist;
+  };
+
+  const handleJoyStart = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    audio.init();
+    const t = e.changedTouches[0];
+    gameState.current.joystick.active = true;
+    gameState.current.joystick.touchId = t.identifier;
+    gameState.current.isShooting = true;
+    updateJoyPos(t.clientX, t.clientY);
+  };
+  
+  const handleJoyMove = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      if (t.identifier === gameState.current.joystick.touchId) {
+        updateJoyPos(t.clientX, t.clientY);
+      }
+    }
+  };
+  
+  const handleJoyEnd = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      if (t.identifier === gameState.current.joystick.touchId) {
+        gameState.current.joystick.active = false;
+        gameState.current.joystick.touchId = -1;
+        gameState.current.joystick.dx = 0;
+        gameState.current.joystick.dy = 0;
+        if (joystickKnobRef.current) {
+          joystickKnobRef.current.style.transform = `translate(-50%, -50%)`;
+        }
+        if (gameState.current.aimTouchId === -1) {
+          gameState.current.isShooting = false;
+        }
+      }
+    }
   };
 
   return (
@@ -923,7 +1321,7 @@ export default function App() {
       />
 
       {/* HUD */}
-      <div className="absolute top-6 right-8 text-right pointer-events-none">
+      <div className="absolute top-6 right-24 text-right pointer-events-none">
         <div className="text-4xl font-bold text-[#00f3ff] drop-shadow-[0_0_10px_rgba(0,243,255,0.8)]">
           {score}
         </div>
@@ -932,29 +1330,267 @@ export default function App() {
         </div>
       </div>
 
-      {/* Auth UI */}
-      <div className="absolute top-6 left-8 z-10">
-        {user ? (
-          <div className="flex items-center gap-4 bg-black/50 p-2 rounded-full border border-zinc-800 backdrop-blur-sm">
-            {user.photoURL && <img src={user.photoURL} alt="Avatar" className="w-8 h-8 rounded-full" referrerPolicy="no-referrer" />}
-            <span className="text-white text-sm font-medium">{user.displayName}</span>
-            <button onClick={logOut} className="text-xs text-zinc-400 hover:text-white px-2">Déconnexion</button>
-          </div>
-        ) : (
-          <button 
-            onClick={signInWithGoogle}
-            className="flex items-center gap-2 bg-white text-black px-4 py-2 rounded-full font-bold hover:bg-zinc-200 transition-colors"
+      {/* Pause Button */}
+      {currentScreen === 'game' && !isGameOver && (
+        <button 
+          onClick={() => {
+            gameState.current.isPaused = !gameState.current.isPaused;
+            setIsPaused(gameState.current.isPaused);
+          }}
+          className="absolute top-6 right-6 z-50 p-3 bg-black/50 border-2 border-[#00f3ff] rounded-full text-[#00f3ff] hover:bg-[#00f3ff] hover:text-black transition-colors shadow-[0_0_10px_rgba(0,243,255,0.4)]"
+        >
+          {isPaused ? <Play size={24} /> : <Pause size={24} />}
+        </button>
+      )}
+
+      {/* Joystick */}
+      {currentScreen === 'game' && !isGameOver && (
+        <div 
+          ref={joystickBaseRef}
+          className="absolute bottom-8 left-8 w-32 h-32 bg-white/10 rounded-full border-2 border-white/20 touch-none z-40 md:hidden"
+          onTouchStart={handleJoyStart}
+          onTouchMove={handleJoyMove}
+          onTouchEnd={handleJoyEnd}
+          onTouchCancel={handleJoyEnd}
+        >
+          <div 
+            ref={joystickKnobRef}
+            className="absolute top-1/2 left-1/2 w-12 h-12 bg-white/50 rounded-full -translate-x-1/2 -translate-y-1/2 shadow-[0_0_15px_rgba(255,255,255,0.5)]"
+          />
+        </div>
+      )}
+
+      {/* Tutorial Text */}
+      {currentScreen === 'game' && tutorialText && (
+        <div className="absolute top-24 left-0 right-0 text-center pointer-events-none z-40">
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="inline-block bg-black/60 border border-[#00f3ff] text-[#00f3ff] px-6 py-3 rounded-full text-lg tracking-widest uppercase shadow-[0_0_15px_rgba(0,243,255,0.5)]"
           >
-            <svg className="w-4 h-4" viewBox="0 0 24 24">
-              <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-              <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-              <path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
-              <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
-            </svg>
-            Connexion Google
-          </button>
-        )}
+            {tutorialText}
+          </motion.div>
+        </div>
+      )}
+
+      {/* Portrait Warning */}
+      <div className="hidden portrait:flex fixed inset-0 z-[100] bg-black flex-col items-center justify-center text-white text-center p-8">
+        <svg className="w-16 h-16 mb-6 text-[#00f3ff] animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+        <h2 className="text-2xl font-bold mb-4 tracking-widest text-[#00f3ff]">MODE PAYSAGE REQUIS</h2>
+        <p className="text-zinc-400">Veuillez tourner votre appareil pour jouer à Neon Survival.</p>
       </div>
+
+      {/* Home Screen */}
+      <AnimatePresence>
+        {currentScreen === 'home' && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-40"
+          >
+            <div className="absolute top-6 right-6 flex gap-4">
+              <button onClick={() => setCurrentScreen('dashboard')} className="p-3 bg-zinc-900 border border-zinc-700 rounded-full text-white hover:border-[#00f3ff] hover:text-[#00f3ff] transition-colors shadow-lg">
+                <UserIcon size={24} />
+              </button>
+            </div>
+
+            <h1 className="text-7xl font-black text-[#00f3ff] drop-shadow-[0_0_30px_rgba(0,243,255,0.8)] mb-6 tracking-tighter text-center px-4">
+              NEON SURVIVAL
+            </h1>
+            
+            <p className="text-zinc-400 max-w-lg text-center mb-12 text-lg leading-relaxed px-4">
+              Pilotez votre vaisseau néon, survivez à des vagues infinies d'ennemis géométriques et collectez des bonus pour augmenter votre puissance de feu.
+            </p>
+            
+            <div className="flex flex-col items-center gap-6 w-full max-w-md px-4">
+              <div className="flex gap-4 w-full mb-2">
+                <button
+                  onClick={() => setDifficulty('easy')}
+                  className={`flex-1 py-2 rounded-lg font-bold text-sm uppercase tracking-widest border-2 transition-all duration-300 ${difficulty === 'easy' ? 'bg-[#00ff44] text-black border-[#00ff44] shadow-[0_0_15px_rgba(0,255,68,0.6)]' : 'bg-transparent text-[#00ff44] border-[#00ff44] hover:bg-[#00ff44]/20'}`}
+                >
+                  Facile
+                </button>
+                <button
+                  onClick={() => setDifficulty('medium')}
+                  className={`flex-1 py-2 rounded-lg font-bold text-sm uppercase tracking-widest border-2 transition-all duration-300 ${difficulty === 'medium' ? 'bg-[#ffff00] text-black border-[#ffff00] shadow-[0_0_15px_rgba(255,255,0,0.6)]' : 'bg-transparent text-[#ffff00] border-[#ffff00] hover:bg-[#ffff00]/20'}`}
+                >
+                  Normal
+                </button>
+                <button
+                  onClick={() => setDifficulty('hard')}
+                  className={`flex-1 py-2 rounded-lg font-bold text-sm uppercase tracking-widest border-2 transition-all duration-300 ${difficulty === 'hard' ? 'bg-[#ff003c] text-black border-[#ff003c] shadow-[0_0_15px_rgba(255,0,60,0.6)]' : 'bg-transparent text-[#ff003c] border-[#ff003c] hover:bg-[#ff003c]/20'}`}
+                >
+                  Difficile
+                </button>
+              </div>
+
+              <button
+                onClick={() => startGame(difficulty)}
+                className="w-full py-4 bg-[#00f3ff] text-black font-black text-2xl uppercase tracking-[0.2em] hover:bg-white transition-all duration-300 shadow-[0_0_20px_rgba(0,243,255,0.6)] hover:shadow-[0_0_40px_rgba(255,255,255,0.8)] rounded-lg"
+              >
+                JOUER
+              </button>
+              
+              <button
+                onClick={() => startGame('easy', true)}
+                className="w-full py-3 bg-transparent border-2 border-zinc-500 text-zinc-400 font-bold text-sm uppercase tracking-widest hover:bg-zinc-800 hover:text-white transition-all duration-300 rounded-lg"
+              >
+                Tutoriel (20s)
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Dashboard Screen */}
+      <AnimatePresence>
+        {currentScreen === 'dashboard' && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="absolute inset-0 bg-black z-50 flex flex-col overflow-y-auto"
+          >
+            <div className="sticky top-0 bg-black/80 backdrop-blur-md p-6 border-b border-zinc-800 flex justify-between items-center z-10">
+              <h2 className="text-3xl font-black text-white tracking-widest">DASHBOARD</h2>
+              <button onClick={() => setCurrentScreen('home')} className="p-2 text-zinc-400 hover:text-white">
+                <X size={32} />
+              </button>
+            </div>
+
+            <div className="p-8 max-w-6xl mx-auto w-full grid grid-cols-1 lg:grid-cols-3 gap-8">
+              
+              {/* Profile Section */}
+              <div className="lg:col-span-1 space-y-8">
+                <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl">
+                  <h3 className="text-xl font-bold text-[#00f3ff] mb-6 flex items-center gap-2"><UserIcon /> Profil</h3>
+                  {user ? (
+                    <div className="space-y-6">
+                      <div className="flex items-center gap-4">
+                        <img src={user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`} alt="Avatar" className="w-20 h-20 rounded-full border-2 border-zinc-700 object-cover" referrerPolicy="no-referrer" />
+                        <div className="flex-1 min-w-0">
+                          {isEditingProfile ? (
+                            <input type="text" value={editName} onChange={e => setEditName(e.target.value)} className="bg-black border border-zinc-700 text-white px-3 py-1 rounded w-full mb-2" placeholder="Pseudo" />
+                          ) : (
+                            <div className="text-2xl font-bold text-white truncate">{user.displayName || 'Anonyme'}</div>
+                          )}
+                          <div className="text-sm text-zinc-500 truncate">{user.email}</div>
+                        </div>
+                      </div>
+                      
+                      {isEditingProfile && (
+                        <div>
+                          <label className="block text-xs text-zinc-500 mb-1">URL de la photo de profil</label>
+                          <input type="text" value={editPhotoUrl} onChange={e => setEditPhotoUrl(e.target.value)} className="bg-black border border-zinc-700 text-white px-3 py-2 rounded w-full text-sm" placeholder="https://..." />
+                        </div>
+                      )}
+
+                      <div className="flex gap-2">
+                        {isEditingProfile ? (
+                          <button onClick={handleUpdateProfile} className="flex-1 bg-[#00ff44] text-black py-2 rounded font-bold flex items-center justify-center gap-2"><Check size={16}/> Enregistrer</button>
+                        ) : (
+                          <button onClick={() => setIsEditingProfile(true)} className="flex-1 bg-zinc-800 text-white py-2 rounded font-bold hover:bg-zinc-700 flex items-center justify-center gap-2"><Edit2 size={16}/> Modifier</button>
+                        )}
+                        <button onClick={logOut} className="px-4 bg-red-900/30 text-red-500 rounded hover:bg-red-900/50 font-bold">Déconnexion</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center py-8">
+                      <p className="text-zinc-400 mb-6">Connectez-vous pour sauvegarder vos scores et personnaliser votre profil.</p>
+                      <button 
+                        onClick={handleLogin} 
+                        disabled={isLoggingIn}
+                        className={`w-full bg-white text-black py-3 rounded-full font-bold transition-colors flex items-center justify-center gap-2 ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : 'hover:bg-zinc-200'}`}
+                      >
+                        <svg className="w-5 h-5" viewBox="0 0 24 24">
+                          <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                          <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                          <path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                          <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                        </svg>
+                        {isLoggingIn ? 'Connexion...' : 'Connexion Google'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Personal Best */}
+                <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex items-center justify-between">
+                  <div>
+                    <h3 className="text-zinc-400 font-bold mb-1">Meilleur Score</h3>
+                    <div className="text-4xl font-black text-[#ffff00]">{personalBest}</div>
+                  </div>
+                  <Trophy size={48} className="text-zinc-800" />
+                </div>
+
+                {/* Settings */}
+                <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl">
+                  <h3 className="text-xl font-bold text-[#00f3ff] mb-6 flex items-center gap-2"><Settings /> Paramètres</h3>
+                  
+                  <div className="space-y-6">
+                    <div>
+                      <div className="flex justify-between text-sm mb-2">
+                        <span className="text-zinc-300">Volume</span>
+                        <span className="text-zinc-500">{Math.round(volume * 100)}%</span>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <VolumeX size={18} className="text-zinc-500" />
+                        <input type="range" min="0" max="1" step="0.05" value={volume} onChange={(e) => setVolume(parseFloat(e.target.value))} className="w-full accent-[#00f3ff]" />
+                        <Volume2 size={18} className="text-zinc-500" />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-300">Particules & Explosions</span>
+                      <button onClick={() => setParticlesEnabled(!particlesEnabled)} className={`w-12 h-6 rounded-full transition-colors relative ${particlesEnabled ? 'bg-[#00f3ff]' : 'bg-zinc-700'}`}>
+                        <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${particlesEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-300">Secousses d'écran</span>
+                      <button onClick={() => setShakeEnabled(!shakeEnabled)} className={`w-12 h-6 rounded-full transition-colors relative ${shakeEnabled ? 'bg-[#00f3ff]' : 'bg-zinc-700'}`}>
+                        <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${shakeEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Leaderboard Section */}
+              <div className="lg:col-span-2 bg-zinc-900 border border-zinc-800 p-6 rounded-2xl">
+                <h3 className="text-2xl font-black text-white mb-6 tracking-widest flex items-center gap-3">
+                  <Trophy className="text-[#ffff00]" /> TOP 10 MONDIAL
+                </h3>
+                
+                <div className="space-y-2">
+                  {leaderboard.map((entry, index) => (
+                    <div key={entry.id} className="flex items-center p-4 bg-black/50 rounded-xl border border-zinc-800/50 hover:border-zinc-700 transition-colors">
+                      <div className={`w-12 text-2xl font-black ${index === 0 ? 'text-[#ffff00]' : index === 1 ? 'text-zinc-300' : index === 2 ? 'text-amber-600' : 'text-zinc-600'}`}>
+                        #{index + 1}
+                      </div>
+                      <div className="flex-1 flex items-center gap-4">
+                        <div className="font-bold text-lg text-white">{entry.displayName}</div>
+                        <div className="text-xs text-zinc-500 bg-zinc-800 px-2 py-1 rounded">Vague {entry.wave}</div>
+                      </div>
+                      <div className="text-3xl font-black text-[#00f3ff] tracking-tighter">
+                        {entry.score}
+                      </div>
+                    </div>
+                  ))}
+                  {leaderboard.length === 0 && (
+                    <div className="text-center py-12 text-zinc-500">Aucun score enregistré pour le moment.</div>
+                  )}
+                </div>
+              </div>
+
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Pause Screen */}
       <AnimatePresence>
@@ -1033,7 +1669,7 @@ export default function App() {
               onClick={handleRestart}
               className="px-8 py-4 bg-transparent border-2 border-[#00f3ff] text-[#00f3ff] font-bold text-xl uppercase tracking-widest hover:bg-[#00f3ff] hover:text-black transition-all duration-300 shadow-[0_0_15px_rgba(0,243,255,0.4)] hover:shadow-[0_0_30px_rgba(0,243,255,0.8)]"
             >
-              Rejouer
+              Menu Principal
             </button>
           </motion.div>
         )}
