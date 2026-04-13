@@ -7,511 +7,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import { motion, AnimatePresence } from 'motion/react';
 import { Pause, Play, Settings, User as UserIcon, Trophy, Edit2, Check, X, Volume2, VolumeX, Info } from 'lucide-react';
-import { auth, db, signInWithGoogle, logOut } from './firebase';
+import { auth, db, signInWithGoogle, signInAsGuest, logOut } from './firebase';
 import { onAuthStateChanged, User, updateProfile } from 'firebase/auth';
 import { collection, addDoc, query, orderBy, limit, onSnapshot, serverTimestamp, where, getDocs } from 'firebase/firestore';
-
-// --- Game Entities ---
-
-class Player {
-  x: number;
-  y: number;
-  angle: number;
-  size: number;
-  shieldTimer: number;
-  spreadTimer: number;
-  speedTimer: number;
-
-  constructor(x: number, y: number) {
-    this.x = x;
-    this.y = y;
-    this.angle = 0;
-    this.size = 15;
-    this.shieldTimer = 0;
-    this.spreadTimer = 0;
-    this.speedTimer = 0;
-  }
-
-  update(mouseX: number, mouseY: number, joystick: { active: boolean, dx: number, dy: number }, isAiming: boolean) {
-    if (joystick.active) {
-      const speed = this.speedTimer > 0 ? 8 : 5;
-      this.x += joystick.dx * speed;
-      this.y += joystick.dy * speed;
-      
-      // Clamp to screen bounds
-      this.x = Math.max(this.size, Math.min(window.innerWidth - this.size, this.x));
-      this.y = Math.max(this.size, Math.min(window.innerHeight - this.size, this.y));
-      
-      if (isAiming) {
-        this.angle = Math.atan2(mouseY - this.y, mouseX - this.x);
-      } else if (joystick.dx !== 0 || joystick.dy !== 0) {
-        this.angle = Math.atan2(joystick.dy, joystick.dx);
-      }
-    } else {
-      // Smooth follow
-      const lerp = this.speedTimer > 0 ? 0.3 : 0.1;
-      this.x += (mouseX - this.x) * lerp;
-      this.y += (mouseY - this.y) * lerp;
-      this.angle = Math.atan2(mouseY - this.y, mouseX - this.x);
-    }
-    
-    if (this.shieldTimer > 0) this.shieldTimer--;
-    if (this.spreadTimer > 0) this.spreadTimer--;
-    if (this.speedTimer > 0) this.speedTimer--;
-  }
-
-  draw(ctx: CanvasRenderingContext2D) {
-    ctx.save();
-    ctx.translate(this.x, this.y);
-    
-    if (this.shieldTimer > 0) {
-      ctx.beginPath();
-      ctx.arc(0, 0, this.size * 1.8, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(0, 85, 255, ${0.5 + Math.sin(Date.now() * 0.01) * 0.3})`;
-      ctx.lineWidth = 3;
-      ctx.shadowBlur = 15;
-      ctx.shadowColor = '#0055ff';
-      ctx.stroke();
-    }
-
-    ctx.rotate(this.angle);
-    
-    let color = '#00f3ff';
-    if (this.spreadTimer > 0) color = '#ff00ff';
-    else if (this.speedTimer > 0) color = '#ffff00';
-
-    ctx.shadowBlur = 20;
-    ctx.shadowColor = color;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(this.size, 0);
-    ctx.lineTo(-this.size * 0.6, this.size * 0.6);
-    ctx.lineTo(-this.size * 0.6, -this.size * 0.6);
-    ctx.closePath();
-    ctx.stroke();
-    ctx.restore();
-  }
-}
-
-class Projectile {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  life: number;
-
-  constructor(x: number, y: number, angle: number) {
-    this.x = x;
-    this.y = y;
-    const speed = 15;
-    this.vx = Math.cos(angle) * speed;
-    this.vy = Math.sin(angle) * speed;
-    this.life = 100;
-  }
-
-  update() {
-    this.x += this.vx;
-    this.y += this.vy;
-    this.life--;
-  }
-
-  draw(ctx: CanvasRenderingContext2D) {
-    ctx.save();
-    ctx.shadowBlur = 10;
-    ctx.shadowColor = '#00f3ff';
-    ctx.fillStyle = '#00f3ff';
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-type PowerUpType = 'shield' | 'spread' | 'speed';
-type Difficulty = 'easy' | 'medium' | 'hard';
-
-class PowerUp {
-  x: number;
-  y: number;
-  type: PowerUpType;
-  size: number;
-  life: number;
-  tick: number;
-
-  constructor(x: number, y: number, type: PowerUpType) {
-    this.x = x;
-    this.y = y;
-    this.type = type;
-    this.size = 12;
-    this.life = 600;
-    this.tick = 0;
-  }
-
-  update() {
-    this.life--;
-    this.tick++;
-  }
-
-  draw(ctx: CanvasRenderingContext2D) {
-    ctx.save();
-    ctx.translate(this.x, this.y);
-    ctx.rotate(this.tick * 0.05);
-    
-    let color = '#ffffff';
-    if (this.type === 'shield') color = '#0055ff';
-    else if (this.type === 'spread') color = '#ff00ff';
-    else if (this.type === 'speed') color = '#ffff00';
-
-    ctx.shadowBlur = 15;
-    ctx.shadowColor = color;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-
-    if (this.life < 120 && this.tick % 10 < 5) {
-      ctx.globalAlpha = 0.3;
-    }
-
-    ctx.beginPath();
-    ctx.arc(0, 0, this.size + Math.sin(this.tick * 0.1) * 2, 0, Math.PI * 2);
-    ctx.stroke();
-    
-    ctx.fillStyle = color;
-    if (this.type === 'shield') {
-      ctx.fillRect(-4, -4, 8, 8);
-    } else if (this.type === 'spread') {
-      ctx.beginPath();
-      ctx.moveTo(0, -6); ctx.lineTo(5, 4); ctx.lineTo(-5, 4);
-      ctx.fill();
-    } else if (this.type === 'speed') {
-      ctx.beginPath();
-      ctx.moveTo(-4, -5); ctx.lineTo(4, 0); ctx.lineTo(-4, 5);
-      ctx.fill();
-    }
-
-    ctx.restore();
-  }
-}
-
-type EnemyType = 'chaser' | 'dasher' | 'tank' | 'wavy' | 'boss';
-
-class Enemy {
-  x: number;
-  y: number;
-  size: number;
-  speed: number;
-  type: EnemyType;
-  color: string;
-  hp: number;
-  maxHp: number;
-  tick: number;
-  angle: number;
-  state: number;
-  stateTimer: number;
-  hitFlash: number;
-
-  constructor(x: number, y: number, speed: number, type: EnemyType) {
-    this.x = x;
-    this.y = y;
-    this.type = type;
-    this.tick = 0;
-    this.angle = 0;
-    this.state = 0;
-    this.stateTimer = 0;
-    this.hitFlash = 0;
-
-    switch (type) {
-      case 'boss':
-        this.size = 45;
-        this.speed = speed * 1.2;
-        this.color = '#ffffff'; // White
-        this.hp = 100;
-        break;
-      case 'dasher':
-        this.size = 12;
-        this.speed = speed * 1.8;
-        this.color = '#ffaa00'; // Orange
-        this.hp = 1;
-        break;
-      case 'tank':
-        this.size = 24;
-        this.speed = speed * 0.5;
-        this.color = '#b700ff'; // Purple
-        this.hp = 5;
-        break;
-      case 'wavy':
-        this.size = 14;
-        this.speed = speed * 1.2;
-        this.color = '#00ff44'; // Green
-        this.hp = 2;
-        break;
-      case 'chaser':
-      default:
-        this.size = 16;
-        this.speed = speed;
-        this.color = '#ff003c'; // Red
-        this.hp = 1;
-        break;
-    }
-    this.maxHp = this.hp;
-  }
-
-  update(playerX: number, playerY: number) {
-    this.tick++;
-    const targetAngle = Math.atan2(playerY - this.y, playerX - this.x);
-
-    if (this.type === 'boss') {
-      this.stateTimer++;
-      if (this.state === 0) {
-        // Orbit and approach slowly
-        const orbitDist = 250;
-        const targetX = playerX + Math.cos(this.tick * 0.03) * orbitDist;
-        const targetY = playerY + Math.sin(this.tick * 0.03) * orbitDist;
-        const angleToTarget = Math.atan2(targetY - this.y, targetX - this.x);
-        this.x += Math.cos(angleToTarget) * this.speed;
-        this.y += Math.sin(angleToTarget) * this.speed;
-        
-        if (this.stateTimer > 180) {
-          this.state = 1;
-          this.stateTimer = 0;
-          this.angle = targetAngle; // Lock target for dash
-        }
-      } else if (this.state === 1) {
-        // Dash attack
-        this.x += Math.cos(this.angle) * this.speed * 3.5;
-        this.y += Math.sin(this.angle) * this.speed * 3.5;
-        
-        if (this.stateTimer > 45) {
-          this.state = 0;
-          this.stateTimer = 0;
-        }
-      }
-    } else if (this.type === 'wavy') {
-      this.angle = targetAngle;
-      const waveOffset = Math.sin(this.tick * 0.15) * 4;
-      this.x += Math.cos(this.angle) * this.speed + Math.cos(this.angle + Math.PI/2) * waveOffset;
-      this.y += Math.sin(this.angle) * this.speed + Math.sin(this.angle + Math.PI/2) * waveOffset;
-    } else if (this.type === 'dasher') {
-       this.angle = targetAngle;
-       this.x += Math.cos(this.angle) * this.speed;
-       this.y += Math.sin(this.angle) * this.speed;
-    } else {
-      this.angle = targetAngle;
-      this.x += Math.cos(this.angle) * this.speed;
-      this.y += Math.sin(this.angle) * this.speed;
-    }
-  }
-
-  draw(ctx: CanvasRenderingContext2D) {
-    ctx.save();
-    ctx.shadowBlur = 15;
-    ctx.shadowColor = this.hitFlash > 0 ? '#ffffff' : this.color;
-    ctx.strokeStyle = this.hitFlash > 0 ? '#ffffff' : this.color;
-    ctx.lineWidth = 2;
-    ctx.translate(this.x, this.y);
-
-    const hpRatio = this.hp / this.maxHp;
-    ctx.globalAlpha = 0.4 + 0.6 * hpRatio;
-
-    let fillColor = this.hitFlash > 0 ? '#ffffff' : this.color;
-
-    if (this.type === 'boss') {
-      ctx.rotate(this.tick * 0.02);
-      ctx.beginPath();
-      for (let i = 0; i < 8; i++) {
-        const a = (Math.PI * 2 / 8) * i;
-        const r = i % 2 === 0 ? this.size : this.size * 0.6;
-        ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
-      }
-      ctx.closePath();
-      ctx.stroke();
-      ctx.fillStyle = fillColor;
-      ctx.globalAlpha = 0.2 * hpRatio;
-      ctx.fill();
-      
-      // Draw a core
-      ctx.beginPath();
-      ctx.arc(0, 0, this.size * 0.3, 0, Math.PI * 2);
-      ctx.fillStyle = this.hitFlash > 0 ? '#ffffff' : (this.state === 1 ? '#ff003c' : this.color); // Core turns red when dashing
-      ctx.globalAlpha = 0.8;
-      ctx.fill();
-    } else if (this.type === 'tank') {
-      ctx.rotate(this.tick * 0.02);
-      ctx.beginPath();
-      for (let i = 0; i < 6; i++) {
-        const a = (Math.PI * 2 / 6) * i;
-        ctx.lineTo(Math.cos(a) * this.size, Math.sin(a) * this.size);
-      }
-      ctx.closePath();
-      ctx.stroke();
-      ctx.fillStyle = fillColor;
-      ctx.globalAlpha = 0.2 * hpRatio;
-      ctx.fill();
-    } else if (this.type === 'dasher') {
-      ctx.rotate(this.angle);
-      ctx.beginPath();
-      ctx.moveTo(this.size, 0);
-      ctx.lineTo(-this.size, this.size * 0.6);
-      ctx.lineTo(-this.size * 0.5, 0);
-      ctx.lineTo(-this.size, -this.size * 0.6);
-      ctx.closePath();
-      ctx.stroke();
-      ctx.fillStyle = fillColor;
-      ctx.globalAlpha = 0.2 * hpRatio;
-      ctx.fill();
-    } else if (this.type === 'wavy') {
-      ctx.rotate(this.tick * 0.05);
-      ctx.beginPath();
-      for (let i = 0; i < 4; i++) {
-        const a = (Math.PI * 2 / 4) * i;
-        ctx.lineTo(Math.cos(a) * this.size, Math.sin(a) * this.size);
-      }
-      ctx.closePath();
-      ctx.stroke();
-      ctx.fillStyle = fillColor;
-      ctx.globalAlpha = 0.2 * hpRatio;
-      ctx.fill();
-    } else {
-      ctx.rotate(this.angle);
-      ctx.beginPath();
-      ctx.moveTo(this.size, 0);
-      ctx.lineTo(-this.size, this.size * 0.8);
-      ctx.lineTo(-this.size * 0.4, 0);
-      ctx.lineTo(-this.size, -this.size * 0.8);
-      ctx.closePath();
-      ctx.stroke();
-      ctx.fillStyle = fillColor;
-      ctx.globalAlpha = 0.2 * hpRatio;
-      ctx.fill();
-    }
-
-    ctx.restore();
-  }
-}
-
-class Particle {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  life: number;
-  decay: number;
-  color: string;
-
-  constructor(x: number, y: number, color: string) {
-    this.x = x;
-    this.y = y;
-    const angle = Math.random() * Math.PI * 2;
-    const speed = Math.random() * 6 + 1;
-    this.vx = Math.cos(angle) * speed;
-    this.vy = Math.sin(angle) * speed;
-    this.life = 1;
-    this.decay = Math.random() * 0.05 + 0.02;
-    this.color = color;
-  }
-
-  update() {
-    this.x += this.vx;
-    this.y += this.vy;
-    this.life -= this.decay;
-  }
-
-  draw(ctx: CanvasRenderingContext2D) {
-    ctx.save();
-    ctx.globalAlpha = Math.max(0, this.life);
-    ctx.shadowBlur = 10;
-    ctx.shadowColor = this.color;
-    ctx.fillStyle = this.color;
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-// --- Audio System ---
-
-class AudioEngine {
-  ctx: AudioContext | null = null;
-  masterVolume: number = 0.5;
-
-  init() {
-    if (!this.ctx) {
-      this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    }
-    if (this.ctx.state === 'suspended') {
-      this.ctx.resume();
-    }
-  }
-
-  setVolume(vol: number) {
-    this.masterVolume = Math.max(0, Math.min(1, vol));
-  }
-
-  playShoot() {
-    if (!this.ctx) return;
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(880, this.ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(110, this.ctx.currentTime + 0.1);
-    gain.gain.setValueAtTime(0.05 * this.masterVolume, this.ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.1);
-    osc.connect(gain);
-    gain.connect(this.ctx.destination);
-    osc.start();
-    osc.stop(this.ctx.currentTime + 0.1);
-  }
-
-  playExplosion(isBoss = false) {
-    if (!this.ctx) return;
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(isBoss ? 100 : 200, this.ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(10, this.ctx.currentTime + (isBoss ? 0.5 : 0.2));
-    gain.gain.setValueAtTime((isBoss ? 0.2 : 0.05) * this.masterVolume, this.ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + (isBoss ? 0.5 : 0.2));
-    osc.connect(gain);
-    gain.connect(this.ctx.destination);
-    osc.start();
-    osc.stop(this.ctx.currentTime + (isBoss ? 0.5 : 0.2));
-  }
-
-  playPowerUp() {
-    if (!this.ctx) return;
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(440, this.ctx.currentTime);
-    osc.frequency.setValueAtTime(554.37, this.ctx.currentTime + 0.05);
-    osc.frequency.setValueAtTime(659.25, this.ctx.currentTime + 0.1);
-    osc.frequency.setValueAtTime(880, this.ctx.currentTime + 0.15);
-    gain.gain.setValueAtTime(0.1 * this.masterVolume, this.ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.3);
-    osc.connect(gain);
-    gain.connect(this.ctx.destination);
-    osc.start();
-    osc.stop(this.ctx.currentTime + 0.3);
-  }
-
-  playGameOver() {
-    if (!this.ctx) return;
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(200, this.ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(20, this.ctx.currentTime + 1.5);
-    gain.gain.setValueAtTime(0.2 * this.masterVolume, this.ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 1.5);
-    osc.connect(gain);
-    gain.connect(this.ctx.destination);
-    osc.start();
-    osc.stop(this.ctx.currentTime + 1.5);
-  }
-}
-
-const audio = new AudioEngine();
+import { Player, Projectile, PowerUp, Enemy, Particle, PowerUpType, Difficulty, EnemyType } from './game/entities';
+import { audio } from './game/AudioEngine';
 
 // --- Main Application ---
 
@@ -531,6 +31,7 @@ export default function App() {
   const [currentScreen, setCurrentScreen] = useState<'home' | 'game' | 'dashboard'>('home');
   const [isTutorial, setIsTutorial] = useState(false);
   const [tutorialText, setTutorialText] = useState('');
+  const [accessibilityMode, setAccessibilityMode] = useState(false);
   
   // Settings
   const [volume, setVolume] = useState(0.5);
@@ -594,6 +95,18 @@ export default function App() {
     }
   };
 
+  const handleGuestLogin = async () => {
+    if (isLoggingIn) return;
+    setIsLoggingIn(true);
+    try {
+      await signInAsGuest();
+    } catch (error) {
+      // Error handled in firebase.ts
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
   const handleUpdateProfile = async () => {
     if (!user) return;
     try {
@@ -650,6 +163,7 @@ export default function App() {
     comboMessage: '',
     comboMessageTimer: 0,
     comboScale: 1,
+    accessibilityMode: false,
   });
 
   // Fetch a snarky death message using Gemini Flash Lite
@@ -673,6 +187,8 @@ export default function App() {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    
+    gameState.current.accessibilityMode = accessibilityMode;
 
     // Handle Resize
     const handleResize = () => {
@@ -1065,8 +581,11 @@ export default function App() {
       }
 
       // Restore screen shake
-      if (state.shake > 0) {
+      if (state.shake > 0 && !state.accessibilityMode) {
         ctx.restore();
+        state.shake *= 0.9;
+        if (state.shake < 0.5) state.shake = 0;
+      } else if (state.shake > 0) {
         state.shake *= 0.9;
         if (state.shake < 0.5) state.shake = 0;
       }
@@ -1102,8 +621,10 @@ export default function App() {
 
       // Damage flash
       if (state.damageFlash > 0) {
-        ctx.fillStyle = `rgba(255, 0, 60, ${state.damageFlash * 0.5})`;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        if (!state.accessibilityMode) {
+          ctx.fillStyle = `rgba(255, 0, 60, ${state.damageFlash * 0.5})`;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
         state.damageFlash -= 0.05;
       }
 
@@ -1392,6 +913,13 @@ export default function App() {
             className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-40"
           >
             <div className="absolute top-6 right-6 flex gap-4">
+              <button 
+                onClick={() => setAccessibilityMode(!accessibilityMode)} 
+                className={`p-3 rounded-full border transition-colors shadow-lg ${accessibilityMode ? 'bg-[#00f3ff] text-black border-[#00f3ff]' : 'bg-zinc-900 border-zinc-700 text-white hover:border-[#00f3ff] hover:text-[#00f3ff]'}`}
+                title="Mode Accessibilité (Désactive les flashs et secousses)"
+              >
+                {accessibilityMode ? <VolumeX size={24} /> : <Volume2 size={24} />}
+              </button>
               <button onClick={() => setCurrentScreen('dashboard')} className="p-3 bg-zinc-900 border border-zinc-700 rounded-full text-white hover:border-[#00f3ff] hover:text-[#00f3ff] transition-colors shadow-lg">
                 <UserIcon size={24} />
               </button>
@@ -1475,9 +1003,9 @@ export default function App() {
                           {isEditingProfile ? (
                             <input type="text" value={editName} onChange={e => setEditName(e.target.value)} className="bg-black border border-zinc-700 text-white px-3 py-1 rounded w-full mb-2" placeholder="Pseudo" />
                           ) : (
-                            <div className="text-2xl font-bold text-white truncate">{user.displayName || 'Anonyme'}</div>
+                            <div className="text-2xl font-bold text-white truncate">{user.displayName || (user.isAnonymous ? 'Joueur Invité' : 'Anonyme')}</div>
                           )}
-                          <div className="text-sm text-zinc-500 truncate">{user.email}</div>
+                          <div className="text-sm text-zinc-500 truncate">{user.isAnonymous ? 'Compte temporaire' : user.email}</div>
                         </div>
                       </div>
                       
@@ -1503,7 +1031,7 @@ export default function App() {
                       <button 
                         onClick={handleLogin} 
                         disabled={isLoggingIn}
-                        className={`w-full bg-white text-black py-3 rounded-full font-bold transition-colors flex items-center justify-center gap-2 ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : 'hover:bg-zinc-200'}`}
+                        className={`w-full bg-white text-black py-3 rounded-full font-bold transition-colors flex items-center justify-center gap-2 mb-4 ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : 'hover:bg-zinc-200'}`}
                       >
                         <svg className="w-5 h-5" viewBox="0 0 24 24">
                           <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
@@ -1512,6 +1040,14 @@ export default function App() {
                           <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
                         </svg>
                         {isLoggingIn ? 'Connexion...' : 'Connexion Google'}
+                      </button>
+                      <button 
+                        onClick={handleGuestLogin} 
+                        disabled={isLoggingIn}
+                        className={`w-full bg-zinc-800 text-white py-3 rounded-full font-bold transition-colors flex items-center justify-center gap-2 border border-zinc-700 ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : 'hover:bg-zinc-700'}`}
+                      >
+                        <UserIcon size={20} />
+                        Jouer en tant qu'invité
                       </button>
                     </div>
                   )}

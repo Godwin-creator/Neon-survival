@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
 const getEnv = (key: string, fallback: string) => {
@@ -12,13 +12,13 @@ const getEnv = (key: string, fallback: string) => {
 };
 
 const firebaseConfig = {
-  apiKey: getEnv('VITE_FIREBASE_API_KEY', "AIzaSyCJr1uicd-GyURjfF8pUO9hSaX7M16ET5w"),
-  authDomain: getEnv('VITE_FIREBASE_AUTH_DOMAIN', "gen-lang-client-0908897182.firebaseapp.com"),
-  projectId: getEnv('VITE_FIREBASE_PROJECT_ID', "gen-lang-client-0908897182"),
-  storageBucket: getEnv('VITE_FIREBASE_STORAGE_BUCKET', "gen-lang-client-0908897182.firebasestorage.app"),
-  messagingSenderId: getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID', "631654501120"),
-  appId: getEnv('VITE_FIREBASE_APP_ID', "1:631654501120:web:d52ee08483f616df33c1e5"),
-  measurementId: getEnv('VITE_FIREBASE_MEASUREMENT_ID', "")
+  apiKey: getEnv('VITE_FIREBASE_API_KEY', "AIzaSyCfuRa1fvCDPqva3MjijMOfdMBk1GdVVWM"),
+  authDomain: getEnv('VITE_FIREBASE_AUTH_DOMAIN', "neon-survival-15e00.firebaseapp.com"),
+  projectId: getEnv('VITE_FIREBASE_PROJECT_ID', "neon-survival-15e00"),
+  storageBucket: getEnv('VITE_FIREBASE_STORAGE_BUCKET', "neon-survival-15e00.firebasestorage.app"),
+  messagingSenderId: getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID', "1091184220776"),
+  appId: getEnv('VITE_FIREBASE_APP_ID', "1:1091184220776:web:2fec87d37b21549e7b39dd"),
+  measurementId: getEnv('VITE_FIREBASE_MEASUREMENT_ID', "G-HGHGK85T6M")
 };
 
 // Initialisation
@@ -26,8 +26,8 @@ const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
 
-// Utilisation de la Database ID ou "(default)" par défaut
-export const db = getFirestore(app, import.meta.env.VITE_FIREBASE_DATABASE_ID || "ai-studio-1028c091-ae8c-4dc4-aa0f-615482e6dcab");
+// Utilisation de la Database par défaut
+export const db = getFirestore(app);
 
 export const googleProvider = new GoogleAuthProvider();
 
@@ -42,6 +42,16 @@ export const signInWithGoogle = async () => {
     } else {
       console.error("Error signing in with Google", error);
     }
+    throw error;
+  }
+};
+
+export const signInAsGuest = async () => {
+  try {
+    const result = await signInAnonymously(auth);
+    return result;
+  } catch (error) {
+    console.error("Error signing in anonymously", error);
     throw error;
   }
 };
