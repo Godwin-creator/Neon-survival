@@ -4,12 +4,11 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { GoogleGenAI } from '@google/genai';
 import { motion, AnimatePresence } from 'motion/react';
 import { Pause, Play, Settings, User as UserIcon, Trophy, Edit2, Check, X, Volume2, VolumeX, Info } from 'lucide-react';
 import { auth, db, signInWithGoogle, signInAsGuest, logOut } from './firebase';
 import { onAuthStateChanged, User, updateProfile } from 'firebase/auth';
-import { collection, addDoc, query, orderBy, limit, onSnapshot, serverTimestamp, where, getDocs } from 'firebase/firestore';
+import { collection, query, orderBy, limit, onSnapshot, serverTimestamp, where, getDocs } from 'firebase/firestore';
 import { Player, Projectile, PowerUp, Enemy, Particle, PowerUpType, Difficulty, EnemyType } from './game/entities';
 import { audio } from './game/AudioEngine';
 
@@ -121,12 +120,17 @@ export default function App() {
   const saveScore = async (finalScore: number, finalWave: number) => {
     if (!user || finalScore === 0) return;
     try {
-      await addDoc(collection(db, 'scores'), {
-        uid: user.uid,
-        displayName: user.displayName || 'Anonyme',
-        score: finalScore,
-        wave: finalWave,
-        createdAt: serverTimestamp()
+      const token = await user.getIdToken();
+      await fetch('/api/scores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid: user.uid,
+          displayName: user.displayName || (user.isAnonymous ? 'Joueur Invité' : 'Anonyme'),
+          score: finalScore,
+          wave: finalWave,
+          token
+        })
       });
     } catch (error) {
       console.error("Error saving score:", error);
@@ -166,15 +170,16 @@ export default function App() {
     accessibilityMode: false,
   });
 
-  // Fetch a snarky death message using Gemini Flash Lite
+  // Fetch a snarky death message using backend API
   const fetchDeathMessage = async (finalScore: number, finalWave: number) => {
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-lite-preview',
-        contents: `Génère une phrase courte, sarcastique et unique (max 15 mots) en français pour un joueur qui vient de mourir dans un jeu vidéo rétro néon. Le joueur a atteint le score de ${finalScore} à la vague ${finalWave}. Fais une pique amusante en fonction de ces statistiques.`,
+      const res = await fetch('/api/death-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ score: finalScore, wave: finalWave })
       });
-      setDeathMessage(response.text);
+      const data = await res.json();
+      setDeathMessage(data.message);
     } catch (err) {
       setDeathMessage("Le néon s'est éteint. Vous avez échoué.");
     }
