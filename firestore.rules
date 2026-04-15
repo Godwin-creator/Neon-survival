@@ -15,6 +15,19 @@ service cloud.firestore {
     //   - wave: number (required, >= 1) - The wave reached
     //   - createdAt: timestamp (required) - When the score was achieved
     //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required) - The user ID of the player
+    //   - playerColor: string (required)
+    //   - particleStyle: string (required)
+    //   - bgTheme: string (required)
+    //   - volume: number (required)
+    //   - particlesEnabled: boolean (required)
+    //   - shakeEnabled: boolean (required)
+    //   - accessibilityMode: boolean (required)
+    //   - updatedAt: timestamp (required)
+    //
     // ===============================================================
 
     // ===============================================================
@@ -45,6 +58,19 @@ service cloud.firestore {
              data.createdAt is timestamp;
     }
 
+    function isValidUserPreferences(data) {
+      return hasOnlyAllowedFields(['uid', 'playerColor', 'particleStyle', 'bgTheme', 'volume', 'particlesEnabled', 'shakeEnabled', 'accessibilityMode', 'updatedAt']) &&
+             data.uid is string && data.uid.size() > 0 && data.uid.size() < 128 &&
+             data.playerColor is string && data.playerColor.size() > 0 && data.playerColor.size() <= 20 &&
+             data.particleStyle is string && data.particleStyle.size() > 0 && data.particleStyle.size() <= 20 &&
+             data.bgTheme is string && data.bgTheme.size() > 0 && data.bgTheme.size() <= 20 &&
+             data.volume is number && data.volume >= 0 && data.volume <= 1 &&
+             data.particlesEnabled is bool &&
+             data.shakeEnabled is bool &&
+             data.accessibilityMode is bool &&
+             data.updatedAt is timestamp;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
@@ -59,6 +85,24 @@ service cloud.firestore {
                     
       // Scores cannot be updated or deleted once created (immutable leaderboard)
       allow update, delete: if false;
+    }
+
+    match /users/{userId} {
+      // Users can only read and write their own preferences
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      
+      allow create: if isAuthenticated() && 
+                    request.auth.uid == userId &&
+                    isValidUserPreferences(request.resource.data) &&
+                    request.resource.data.uid == userId;
+                    
+      allow update: if isAuthenticated() && 
+                    request.auth.uid == userId &&
+                    isValidUserPreferences(request.resource.data) &&
+                    request.resource.data.uid == userId &&
+                    uidUnchanged();
+                    
+      allow delete: if false;
     }
   }
 }

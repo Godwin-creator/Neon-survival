@@ -6,8 +6,9 @@ export class Player {
   shieldTimer: number;
   spreadTimer: number;
   speedTimer: number;
+  color: string;
 
-  constructor(x: number, y: number) {
+  constructor(x: number, y: number, color: string = '#00f3ff') {
     this.x = x;
     this.y = y;
     this.angle = 0;
@@ -15,6 +16,7 @@ export class Player {
     this.shieldTimer = 0;
     this.spreadTimer = 0;
     this.speedTimer = 0;
+    this.color = color;
   }
 
   update(mouseX: number, mouseY: number, joystick: { active: boolean, dx: number, dy: number }, isAiming: boolean) {
@@ -61,13 +63,13 @@ export class Player {
 
     ctx.rotate(this.angle);
     
-    let color = '#00f3ff';
-    if (this.spreadTimer > 0) color = '#ff00ff';
-    else if (this.speedTimer > 0) color = '#ffff00';
+    let drawColor = this.color;
+    if (this.spreadTimer > 0) drawColor = '#ff00ff';
+    else if (this.speedTimer > 0) drawColor = '#ffff00';
 
     ctx.shadowBlur = 20;
-    ctx.shadowColor = color;
-    ctx.strokeStyle = color;
+    ctx.shadowColor = drawColor;
+    ctx.strokeStyle = drawColor;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(this.size, 0);
@@ -376,6 +378,8 @@ export class Enemy {
   }
 }
 
+export type ParticleStyle = 'circle' | 'square' | 'star';
+
 export class Particle {
   x: number;
   y: number;
@@ -384,8 +388,9 @@ export class Particle {
   life: number;
   decay: number;
   color: string;
+  style: ParticleStyle;
 
-  constructor(x: number, y: number, color: string) {
+  constructor(x: number, y: number, color: string, style: ParticleStyle = 'circle') {
     this.x = x;
     this.y = y;
     const angle = Math.random() * Math.PI * 2;
@@ -395,6 +400,7 @@ export class Particle {
     this.life = 1.0;
     this.decay = Math.random() * 0.02 + 0.01;
     this.color = color;
+    this.style = style;
   }
 
   update() {
@@ -409,9 +415,24 @@ export class Particle {
     ctx.shadowBlur = 10;
     ctx.shadowColor = this.color;
     ctx.fillStyle = this.color;
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, 2, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.translate(this.x, this.y);
+    
+    if (this.style === 'square') {
+      ctx.fillRect(-2, -2, 4, 4);
+    } else if (this.style === 'star') {
+      ctx.beginPath();
+      for (let i = 0; i < 5; i++) {
+        ctx.lineTo(Math.cos((18 + i * 72) / 180 * Math.PI) * 3, -Math.sin((18 + i * 72) / 180 * Math.PI) * 3);
+        ctx.lineTo(Math.cos((54 + i * 72) / 180 * Math.PI) * 1.5, -Math.sin((54 + i * 72) / 180 * Math.PI) * 1.5);
+      }
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.arc(0, 0, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    
     ctx.restore();
   }
 }

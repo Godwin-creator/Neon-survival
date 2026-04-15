@@ -4,9 +4,12 @@ import path from 'path';
 import { GoogleGenAI } from '@google/genai';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import jwt from 'jsonwebtoken';
 
 const app = express();
 const PORT = 3000;
+const GAME_SECRET = process.env.GAME_SECRET || 'neon_survival_secret_key_123';
+const MAX_SCORE_PER_SECOND = 1000; // Anti-cheat threshold
 
 app.use(express.json());
 
@@ -25,6 +28,32 @@ const firebaseApp = initializeApp(firebaseConfig, 'backend-app');
 const db = getFirestore(firebaseApp);
 
 // API Routes
+app.post('/api/game/start', (req, res) => {
+  // Generate a signed token containing the exact start time
+  const token = jwt.sign({ startTime: Date.now() }, GAME_SECRET, { expiresIn: '2h' });
+  res.json({ sessionToken: token });
+});
+
+// Optional: Endpoint to update session token when a wave is cleared (prevents wave skipping)
+app.post('/api/game/wave', (req, res) => {
+  const { sessionToken, wave } = req.body;
+  if (!sessionToken) return res.status(403).json({ error: 'Missing token' });
+  
+  try {
+    const decoded = jwt.verify(sessionToken, GAME_SECRET) as any;
+    // Issue a new token with the updated wave
+    const newToken = jwt.sign({ 
+      startTime: decoded.startTime,
+      waveReached: wave,
+      lastWaveTime: Date.now()
+    }, GAME_SECRET, { expiresIn: '2h' });
+    
+    res.json({ sessionToken: newToken });
+  } catch (e) {
+    res.status(403).json({ error: 'Invalid token' });
+  }
+});
+
 app.post('/api/death-message', async (req, res) => {
   try {
     const { score, wave } = req.body;
@@ -42,7 +71,7 @@ app.post('/api/death-message', async (req, res) => {
 
 app.post('/api/scores', async (req, res) => {
   try {
-    const { uid, displayName, score, wave, token } = req.body;
+    const { uid, displayName, score, wave, token, sessionToken } = req.body;
     
     // Basic validation
     if (typeof score !== 'number' || score < 0) {
@@ -50,6 +79,49 @@ app.post('/api/scores', async (req, res) => {
     }
     if (typeof wave !== 'number' || wave < 1) {
       return res.status(400).json({ error: 'Invalid wave' });
+    }
+    
+    // Anti-Cheat: Validate Game Session
+    if (!sessionToken) {
+      return res.status(403).json({ error: 'Missing game session token. Cheat detected.' });
+    }
+    
+    try {
+      const decoded = jwt.verify(sessionToken, GAME_SECRET) as { startTime: number, waveReached?: number };
+      const elapsedSeconds = (Date.now() - decoded.startTime) / 1000;
+      
+      // 1. Check Score Rate (Max points per second)
+      // A boss is 500 pts, normal enemies are 10-50 pts. 
+      // Even with a perfect run, scoring more than ~150-200 pts per second consistently is impossible.
+      const maxPlausibleScoreRate = 250; 
+      
+      // 2. Check Wave Progression Speed
+      // A wave requires 500 points. At max plausible rate, a wave takes at least 2 seconds.
+      // In reality, enemies spawn slowly, so a wave takes much longer (10-30 seconds).
+      const minSecondsPerWave = 5; 
+      const expectedMinDuration = wave * minSecondsPerWave;
+
+      // 3. Check Score vs Wave consistency
+      // You need at least (wave-1)*500 points to reach a wave.
+      const minRequiredScore = (wave - 1) * 500;
+
+      if (score < minRequiredScore) {
+         console.warn(`Cheat detected! Score too low for wave. Score: ${score}, Wave: ${wave}`);
+         return res.status(403).json({ error: 'Score rejected: mathematical inconsistency.' });
+      }
+
+      if (elapsedSeconds < 1 || (score / elapsedSeconds) > maxPlausibleScoreRate) {
+        console.warn(`Cheat detected! Score: ${score}, Time: ${elapsedSeconds}s, Rate: ${score/elapsedSeconds} pts/s`);
+        return res.status(403).json({ error: 'Score rejected: unrealistic score rate (possible cheat detected).' });
+      }
+
+      if (elapsedSeconds < expectedMinDuration) {
+        console.warn(`Cheat detected! Reached wave ${wave} in only ${elapsedSeconds}s`);
+        return res.status(403).json({ error: 'Score rejected: wave progression too fast.' });
+      }
+
+    } catch (e) {
+      return res.status(403).json({ error: 'Invalid or expired game session.' });
     }
     
     // Verify token if provided (anti-cheat)

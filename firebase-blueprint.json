@@ -28,12 +28,61 @@
         }
       },
       "required": ["uid", "displayName", "score", "wave", "createdAt"]
+    },
+    "UserPreferences": {
+      "title": "UserPreferences",
+      "description": "A player's persistent settings and unlocked themes.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "The user ID of the player."
+        },
+        "playerColor": {
+          "type": "string",
+          "description": "The selected player ship color."
+        },
+        "particleStyle": {
+          "type": "string",
+          "description": "The selected particle style."
+        },
+        "bgTheme": {
+          "type": "string",
+          "description": "The selected background theme."
+        },
+        "volume": {
+          "type": "number",
+          "description": "The game volume."
+        },
+        "particlesEnabled": {
+          "type": "boolean",
+          "description": "Whether particles are enabled."
+        },
+        "shakeEnabled": {
+          "type": "boolean",
+          "description": "Whether screen shake is enabled."
+        },
+        "accessibilityMode": {
+          "type": "boolean",
+          "description": "Whether accessibility mode is enabled."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the preferences were last updated."
+        }
+      },
+      "required": ["uid", "playerColor", "particleStyle", "bgTheme", "volume", "particlesEnabled", "shakeEnabled", "accessibilityMode", "updatedAt"]
     }
   },
   "firestore": {
     "/scores/{scoreId}": {
       "schema": { "$ref": "#/entities/Score" },
       "description": "Global leaderboard of scores."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPreferences" },
+      "description": "User preferences and progress."
     }
   }
 }

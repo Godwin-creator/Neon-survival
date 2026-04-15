@@ -8,7 +8,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Pause, Play, Settings, User as UserIcon, Trophy, Edit2, Check, X, Volume2, VolumeX, Info } from 'lucide-react';
 import { auth, db, signInWithGoogle, signInAsGuest, logOut } from './firebase';
 import { onAuthStateChanged, User, updateProfile } from 'firebase/auth';
-import { collection, query, orderBy, limit, onSnapshot, serverTimestamp, where, getDocs } from 'firebase/firestore';
+import { collection, query, orderBy, limit, onSnapshot, serverTimestamp, where, getDocs, doc, setDoc, getDoc } from 'firebase/firestore';
 import { Player, Projectile, PowerUp, Enemy, Particle, PowerUpType, Difficulty, EnemyType } from './game/entities';
 import { audio } from './game/AudioEngine';
 
@@ -31,11 +31,16 @@ export default function App() {
   const [isTutorial, setIsTutorial] = useState(false);
   const [tutorialText, setTutorialText] = useState('');
   const [accessibilityMode, setAccessibilityMode] = useState(false);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
   
-  // Settings
+  // Settings & Customization
   const [volume, setVolume] = useState(0.5);
   const [particlesEnabled, setParticlesEnabled] = useState(true);
   const [shakeEnabled, setShakeEnabled] = useState(true);
+  const [playerColor, setPlayerColor] = useState('#00f3ff');
+  const [particleStyle, setParticleStyle] = useState<'circle' | 'square' | 'star'>('circle');
+  const [bgTheme, setBgTheme] = useState<'classic' | 'grid' | 'matrix'>('classic');
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Profile
   const [personalBest, setPersonalBest] = useState(0);
@@ -49,6 +54,62 @@ export default function App() {
     audio.setVolume(volume);
   }, [volume]);
 
+  // Fetch PB and Preferences
+  useEffect(() => {
+    const fetchUserData = async () => {
+      if (!user) return;
+      
+      // Fetch PB
+      const q = query(collection(db, 'scores'), where('uid', '==', user.uid), orderBy('score', 'desc'), limit(1));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        setPersonalBest(snap.docs[0].data().score);
+      }
+
+      // Fetch Preferences
+      try {
+        const userDocRef = doc(db, 'users', user.uid);
+        const userDoc = await getDoc(userDocRef);
+        if (userDoc.exists()) {
+          const data = userDoc.data();
+          if (data.playerColor) setPlayerColor(data.playerColor);
+          if (data.particleStyle) setParticleStyle(data.particleStyle);
+          if (data.bgTheme) setBgTheme(data.bgTheme);
+          if (data.volume !== undefined) setVolume(data.volume);
+          if (data.particlesEnabled !== undefined) setParticlesEnabled(data.particlesEnabled);
+          if (data.shakeEnabled !== undefined) setShakeEnabled(data.shakeEnabled);
+          if (data.accessibilityMode !== undefined) setAccessibilityMode(data.accessibilityMode);
+        }
+      } catch (error) {
+        console.error("Error fetching user preferences:", error);
+      }
+    };
+    
+    fetchUserData();
+  }, [user]);
+
+  // Save Preferences
+  const savePreferences = async (newPrefs: any) => {
+    if (!user) return;
+    try {
+      const userDocRef = doc(db, 'users', user.uid);
+      await setDoc(userDocRef, {
+        uid: user.uid,
+        playerColor,
+        particleStyle,
+        bgTheme,
+        volume,
+        particlesEnabled,
+        shakeEnabled,
+        accessibilityMode,
+        updatedAt: serverTimestamp(),
+        ...newPrefs
+      }, { merge: true });
+    } catch (error) {
+      console.error("Error saving preferences:", error);
+    }
+  };
+
   // Firebase Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -56,15 +117,6 @@ export default function App() {
       if (currentUser) {
         setEditName(currentUser.displayName || '');
         setEditPhotoUrl(currentUser.photoURL || '');
-        // Fetch PB
-        const fetchPB = async () => {
-          const q = query(collection(db, 'scores'), where('uid', '==', currentUser.uid), orderBy('score', 'desc'), limit(1));
-          const snap = await getDocs(q);
-          if (!snap.empty) {
-            setPersonalBest(snap.docs[0].data().score);
-          }
-        };
-        fetchPB();
       }
     });
     return () => unsubscribe();
@@ -117,6 +169,18 @@ export default function App() {
     }
   };
 
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(err => console.error("Error attempting to enable fullscreen:", err));
+      setIsFullscreen(true);
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+        setIsFullscreen(false);
+      }
+    }
+  };
+
   const saveScore = async (finalScore: number, finalWave: number) => {
     if (!user || finalScore === 0) return;
     try {
@@ -129,7 +193,8 @@ export default function App() {
           displayName: user.displayName || (user.isAnonymous ? 'Joueur Invité' : 'Anonyme'),
           score: finalScore,
           wave: finalWave,
-          token
+          token,
+          sessionToken
         })
       });
     } catch (error) {
@@ -208,7 +273,7 @@ export default function App() {
     let animationId: number;
 
     // Reset State
-    const player = new Player(canvas.width / 2, canvas.height / 2);
+    const player = new Player(canvas.width / 2, canvas.height / 2, playerColor);
     if (difficulty === 'easy') {
       player.shieldTimer = 600; // Start with shield on easy
     }
@@ -288,7 +353,7 @@ export default function App() {
     const createExplosion = (x: number, y: number, color: string, count: number) => {
       if (!particlesEnabled) return;
       for (let i = 0; i < count; i++) {
-        gameState.current.particles.push(new Particle(x, y, color));
+        gameState.current.particles.push(new Particle(x, y, color, particleStyle));
       }
     };
 
@@ -303,8 +368,29 @@ export default function App() {
       state.frames++;
 
       // Trail effect background
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (bgTheme === 'classic') {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      } else if (bgTheme === 'grid') {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = 'rgba(0, 243, 255, 0.1)';
+        ctx.lineWidth = 1;
+        const offset = (state.frames * 2) % 50;
+        ctx.beginPath();
+        for(let i = 0; i < canvas.width; i += 50) { ctx.moveTo(i, 0); ctx.lineTo(i, canvas.height); }
+        for(let i = 0; i < canvas.height; i += 50) { ctx.moveTo(0, i + offset); ctx.lineTo(canvas.width, i + offset); }
+        ctx.stroke();
+      } else if (bgTheme === 'matrix') {
+        ctx.fillStyle = 'rgba(0, 20, 0, 0.2)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = 'rgba(0, 255, 68, 0.1)';
+        for(let i = 0; i < 20; i++) {
+          const x = Math.random() * canvas.width;
+          const y = (state.frames * (Math.random() * 5 + 2)) % canvas.height;
+          ctx.fillRect(x, y, 2, 10 + Math.random() * 20);
+        }
+      }
 
       if (state.isGameOver) {
         // Only update particles if game is over
@@ -383,7 +469,7 @@ export default function App() {
 
         // Speed Trail
         if (state.player.speedTimer > 0 && state.frames % 2 === 0) {
-          const p = new Particle(state.player.x, state.player.y, '#ffff00');
+          const p = new Particle(state.player.x, state.player.y, '#ffff00', particleStyle);
           p.vx = 0;
           p.vy = 0;
           p.life = 0.5;
@@ -450,6 +536,20 @@ export default function App() {
       if (state.score >= state.wave * 500) {
         state.wave++;
         setWave(state.wave);
+        
+        // Update session token to track wave progression securely
+        if (sessionToken) {
+          fetch('/api/game/wave', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionToken, wave: state.wave })
+          })
+          .then(res => res.json())
+          .then(data => {
+            if (data.sessionToken) setSessionToken(data.sessionToken);
+          })
+          .catch(err => console.error("Failed to update wave session", err));
+        }
         
         const extraSeconds = Math.random() < 0.5 ? 10 : 5;
         state.extraBonusDuration += extraSeconds * 60;
@@ -762,7 +862,7 @@ export default function App() {
     };
   }, []);
 
-  const startGame = (selectedDifficulty: Difficulty, tutorial = false) => {
+  const startGame = async (selectedDifficulty: Difficulty, tutorial = false) => {
     setDifficulty(selectedDifficulty);
     setIsTutorial(tutorial);
     setCurrentScreen('game');
@@ -772,6 +872,15 @@ export default function App() {
     setIsPaused(false);
     setDeathMessage(null);
     setGameId((id) => id + 1);
+    
+    // Fetch a new game session token from the backend
+    try {
+      const res = await fetch('/api/game/start', { method: 'POST' });
+      const data = await res.json();
+      setSessionToken(data.sessionToken);
+    } catch (e) {
+      console.error("Failed to start secure game session", e);
+    }
   };
 
   const handleRestart = () => {
@@ -919,7 +1028,10 @@ export default function App() {
           >
             <div className="absolute top-6 right-6 flex gap-4">
               <button 
-                onClick={() => setAccessibilityMode(!accessibilityMode)} 
+                onClick={() => {
+                  setAccessibilityMode(!accessibilityMode);
+                  savePreferences({ accessibilityMode: !accessibilityMode });
+                }} 
                 className={`p-3 rounded-full border transition-colors shadow-lg ${accessibilityMode ? 'bg-[#00f3ff] text-black border-[#00f3ff]' : 'bg-zinc-900 border-zinc-700 text-white hover:border-[#00f3ff] hover:text-[#00f3ff]'}`}
                 title="Mode Accessibilité (Désactive les flashs et secousses)"
               >
@@ -1067,6 +1179,91 @@ export default function App() {
                   <Trophy size={48} className="text-zinc-800" />
                 </div>
 
+                {/* Customization Section */}
+                <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl space-y-6">
+                  <h3 className="text-xl font-bold text-[#ff00ff] flex items-center gap-2">
+                    <Edit2 className="w-5 h-5" /> Personnalisation
+                  </h3>
+                  
+                  <div className="space-y-4">
+                    <div>
+                      <span className="text-zinc-300 block mb-2 text-sm">Couleur du Vaisseau</span>
+                      <div className="flex gap-3">
+                        {['#00f3ff', '#ff00ff', '#00ff44', '#ffff00', '#ff003c'].map(color => (
+                          <button
+                            key={color}
+                            onClick={() => {
+                              setPlayerColor(color);
+                              savePreferences({ playerColor: color });
+                            }}
+                            className={`w-8 h-8 rounded-full border-2 transition-transform ${playerColor === color ? 'scale-125 border-white' : 'border-transparent'}`}
+                            style={{ backgroundColor: color, boxShadow: playerColor === color ? `0 0 10px ${color}` : 'none' }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <span className="text-zinc-300 block mb-2 text-sm">Style de Particules</span>
+                      <div className="flex gap-2">
+                        {(['circle', 'square', 'star'] as const).map(style => (
+                          <button
+                            key={style}
+                            onClick={() => {
+                              setParticleStyle(style);
+                              savePreferences({ particleStyle: style });
+                            }}
+                            className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${particleStyle === style ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}
+                          >
+                            {style === 'circle' ? 'Cercle' : style === 'square' ? 'Carré' : 'Étoile'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <span className="text-zinc-300 block mb-2 text-sm">Thème Visuel (Fond)</span>
+                      <div className="space-y-2">
+                        <button
+                          onClick={() => {
+                            setBgTheme('classic');
+                            savePreferences({ bgTheme: 'classic' });
+                          }}
+                          className={`w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${bgTheme === 'classic' ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}
+                        >
+                          Classique (Vide spatial)
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (personalBest >= 5000) {
+                              setBgTheme('grid');
+                              savePreferences({ bgTheme: 'grid' });
+                            }
+                          }}
+                          disabled={personalBest < 5000}
+                          className={`w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors flex justify-between items-center ${bgTheme === 'grid' ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'} ${personalBest < 5000 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                          <span>Grille Néon</span>
+                          {personalBest < 5000 && <span className="text-xs text-[#ff003c]">Débloqué à 5000 pts</span>}
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (personalBest >= 10000) {
+                              setBgTheme('matrix');
+                              savePreferences({ bgTheme: 'matrix' });
+                            }
+                          }}
+                          disabled={personalBest < 10000}
+                          className={`w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors flex justify-between items-center ${bgTheme === 'matrix' ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'} ${personalBest < 10000 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                          <span>Matrice Cyberpunk</span>
+                          {personalBest < 10000 && <span className="text-xs text-[#ff003c]">Débloqué à 10000 pts</span>}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 {/* Settings */}
                 <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl">
                   <h3 className="text-xl font-bold text-[#00f3ff] mb-6 flex items-center gap-2"><Settings /> Paramètres</h3>
@@ -1079,21 +1276,41 @@ export default function App() {
                       </div>
                       <div className="flex items-center gap-4">
                         <VolumeX size={18} className="text-zinc-500" />
-                        <input type="range" min="0" max="1" step="0.05" value={volume} onChange={(e) => setVolume(parseFloat(e.target.value))} className="w-full accent-[#00f3ff]" />
+                        <input type="range" min="0" max="1" step="0.05" value={volume} onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setVolume(val);
+                          savePreferences({ volume: val });
+                        }} className="w-full accent-[#00f3ff]" />
                         <Volume2 size={18} className="text-zinc-500" />
                       </div>
                     </div>
 
                     <div className="flex items-center justify-between">
+                      <span className="text-zinc-300">Plein Écran</span>
+                      <button 
+                        onClick={toggleFullscreen}
+                        className={`w-12 h-6 rounded-full transition-colors relative ${isFullscreen ? 'bg-[#00f3ff]' : 'bg-zinc-700'}`}
+                      >
+                        <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${isFullscreen ? 'left-7' : 'left-1'}`} />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between">
                       <span className="text-zinc-300">Particules & Explosions</span>
-                      <button onClick={() => setParticlesEnabled(!particlesEnabled)} className={`w-12 h-6 rounded-full transition-colors relative ${particlesEnabled ? 'bg-[#00f3ff]' : 'bg-zinc-700'}`}>
+                      <button onClick={() => {
+                        setParticlesEnabled(!particlesEnabled);
+                        savePreferences({ particlesEnabled: !particlesEnabled });
+                      }} className={`w-12 h-6 rounded-full transition-colors relative ${particlesEnabled ? 'bg-[#00f3ff]' : 'bg-zinc-700'}`}>
                         <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${particlesEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
                       </button>
                     </div>
 
                     <div className="flex items-center justify-between">
                       <span className="text-zinc-300">Secousses d'écran</span>
-                      <button onClick={() => setShakeEnabled(!shakeEnabled)} className={`w-12 h-6 rounded-full transition-colors relative ${shakeEnabled ? 'bg-[#00f3ff]' : 'bg-zinc-700'}`}>
+                      <button onClick={() => {
+                        setShakeEnabled(!shakeEnabled);
+                        savePreferences({ shakeEnabled: !shakeEnabled });
+                      }} className={`w-12 h-6 rounded-full transition-colors relative ${shakeEnabled ? 'bg-[#00f3ff]' : 'bg-zinc-700'}`}>
                         <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${shakeEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
                       </button>
                     </div>
