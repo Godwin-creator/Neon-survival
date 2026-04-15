@@ -5,10 +5,8 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Pause, Play, Settings, User as UserIcon, Trophy, Edit2, Check, X, Volume2, VolumeX, Info } from 'lucide-react';
-import { auth, db, signInWithGoogle, signInAsGuest, logOut } from './firebase';
-import { onAuthStateChanged, User, updateProfile } from 'firebase/auth';
-import { collection, query, orderBy, limit, onSnapshot, serverTimestamp, where, getDocs, doc, setDoc, getDoc } from 'firebase/firestore';
+import { Pause, Play, Settings, Edit2, X, Volume2, VolumeX } from 'lucide-react';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { Player, Projectile, PowerUp, Enemy, Particle, PowerUpType, Difficulty, EnemyType } from './game/entities';
 import { audio } from './game/AudioEngine';
 
@@ -24,14 +22,11 @@ export default function App() {
   const [isPaused, setIsPaused] = useState(false);
   const [gameId, setGameId] = useState(0);
   const [deathMessage, setDeathMessage] = useState<string | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [leaderboard, setLeaderboard] = useState<any[]>([]);
   const [difficulty, setDifficulty] = useState<Difficulty>('medium');
   const [currentScreen, setCurrentScreen] = useState<'home' | 'game' | 'dashboard'>('home');
   const [isTutorial, setIsTutorial] = useState(false);
   const [tutorialText, setTutorialText] = useState('');
   const [accessibilityMode, setAccessibilityMode] = useState(false);
-  const [sessionToken, setSessionToken] = useState<string | null>(null);
   
   // Settings & Customization
   const [volume, setVolume] = useState(0.5);
@@ -42,132 +37,10 @@ export default function App() {
   const [bgTheme, setBgTheme] = useState<'classic' | 'grid' | 'matrix'>('classic');
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Profile
-  const [personalBest, setPersonalBest] = useState(0);
-  const [isEditingProfile, setIsEditingProfile] = useState(false);
-  const [editName, setEditName] = useState('');
-  const [editPhotoUrl, setEditPhotoUrl] = useState('');
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-
   // Apply volume
   useEffect(() => {
     audio.setVolume(volume);
   }, [volume]);
-
-  // Fetch PB and Preferences
-  useEffect(() => {
-    const fetchUserData = async () => {
-      if (!user) return;
-      
-      // Fetch PB
-      const q = query(collection(db, 'scores'), where('uid', '==', user.uid), orderBy('score', 'desc'), limit(1));
-      const snap = await getDocs(q);
-      if (!snap.empty) {
-        setPersonalBest(snap.docs[0].data().score);
-      }
-
-      // Fetch Preferences
-      try {
-        const userDocRef = doc(db, 'users', user.uid);
-        const userDoc = await getDoc(userDocRef);
-        if (userDoc.exists()) {
-          const data = userDoc.data();
-          if (data.playerColor) setPlayerColor(data.playerColor);
-          if (data.particleStyle) setParticleStyle(data.particleStyle);
-          if (data.bgTheme) setBgTheme(data.bgTheme);
-          if (data.volume !== undefined) setVolume(data.volume);
-          if (data.particlesEnabled !== undefined) setParticlesEnabled(data.particlesEnabled);
-          if (data.shakeEnabled !== undefined) setShakeEnabled(data.shakeEnabled);
-          if (data.accessibilityMode !== undefined) setAccessibilityMode(data.accessibilityMode);
-        }
-      } catch (error) {
-        console.error("Error fetching user preferences:", error);
-      }
-    };
-    
-    fetchUserData();
-  }, [user]);
-
-  // Save Preferences
-  const savePreferences = async (newPrefs: any) => {
-    if (!user) return;
-    try {
-      const userDocRef = doc(db, 'users', user.uid);
-      await setDoc(userDocRef, {
-        uid: user.uid,
-        playerColor,
-        particleStyle,
-        bgTheme,
-        volume,
-        particlesEnabled,
-        shakeEnabled,
-        accessibilityMode,
-        updatedAt: serverTimestamp(),
-        ...newPrefs
-      }, { merge: true });
-    } catch (error) {
-      console.error("Error saving preferences:", error);
-    }
-  };
-
-  // Firebase Auth Listener
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      if (currentUser) {
-        setEditName(currentUser.displayName || '');
-        setEditPhotoUrl(currentUser.photoURL || '');
-      }
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Firebase Leaderboard Listener
-  useEffect(() => {
-    const q = query(collection(db, 'scores'), orderBy('score', 'desc'), limit(10));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const scoresData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setLeaderboard(scoresData);
-    }, (error) => {
-      console.error("Error fetching leaderboard:", error);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  const handleLogin = async () => {
-    if (isLoggingIn) return;
-    setIsLoggingIn(true);
-    try {
-      await signInWithGoogle();
-    } catch (error) {
-      // Error handled in firebase.ts
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleGuestLogin = async () => {
-    if (isLoggingIn) return;
-    setIsLoggingIn(true);
-    try {
-      await signInAsGuest();
-    } catch (error) {
-      // Error handled in firebase.ts
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleUpdateProfile = async () => {
-    if (!user) return;
-    try {
-      await updateProfile(user, { displayName: editName, photoURL: editPhotoUrl });
-      setUser({ ...user, displayName: editName, photoURL: editPhotoUrl } as User);
-      setIsEditingProfile(false);
-    } catch (error) {
-      console.error("Error updating profile:", error);
-    }
-  };
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -178,27 +51,6 @@ export default function App() {
         document.exitFullscreen();
         setIsFullscreen(false);
       }
-    }
-  };
-
-  const saveScore = async (finalScore: number, finalWave: number) => {
-    if (!user || finalScore === 0) return;
-    try {
-      const token = await user.getIdToken();
-      await fetch('/api/scores', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          uid: user.uid,
-          displayName: user.displayName || (user.isAnonymous ? 'Joueur Invité' : 'Anonyme'),
-          score: finalScore,
-          wave: finalWave,
-          token,
-          sessionToken
-        })
-      });
-    } catch (error) {
-      console.error("Error saving score:", error);
     }
   };
 
@@ -235,17 +87,24 @@ export default function App() {
     accessibilityMode: false,
   });
 
-  // Fetch a snarky death message using backend API
+  // Fetch a snarky death message using Gemini API
   const fetchDeathMessage = async (finalScore: number, finalWave: number) => {
     try {
-      const res = await fetch('/api/death-message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ score: finalScore, wave: finalWave })
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.1-pro-preview',
+        contents: `Génère une phrase courte, sarcastique et unique (max 15 mots) en français pour un joueur qui vient de mourir dans un jeu vidéo rétro néon. Le joueur a atteint le score de ${finalScore} à la vague ${finalWave}. Fais une pique amusante en fonction de ces statistiques.`,
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }
+        }
       });
-      const data = await res.json();
-      setDeathMessage(data.message);
+      if (response.text) {
+        setDeathMessage(response.text);
+      } else {
+        setDeathMessage("Le néon s'est éteint. Vous avez échoué.");
+      }
     } catch (err) {
+      console.error('Error generating death message:', err);
       setDeathMessage("Le néon s'est éteint. Vous avez échoué.");
     }
   };
@@ -593,20 +452,6 @@ export default function App() {
         state.wave++;
         setWave(state.wave);
         
-        // Update session token to track wave progression securely
-        if (sessionToken) {
-          fetch('/api/game/wave', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionToken, wave: state.wave })
-          })
-          .then(res => res.json())
-          .then(data => {
-            if (data.sessionToken) setSessionToken(data.sessionToken);
-          })
-          .catch(err => console.error("Failed to update wave session", err));
-        }
-        
         const extraSeconds = Math.random() < 0.5 ? 10 : 5;
         state.extraBonusDuration += extraSeconds * 60;
         
@@ -669,7 +514,6 @@ export default function App() {
               createExplosion(state.player.x, state.player.y, '#00f3ff', 50);
               setIsGameOver(true);
               fetchDeathMessage(state.score, state.wave);
-              saveScore(state.score, state.wave);
             }
           }
         }
@@ -928,15 +772,6 @@ export default function App() {
     setIsPaused(false);
     setDeathMessage(null);
     setGameId((id) => id + 1);
-    
-    // Fetch a new game session token from the backend
-    try {
-      const res = await fetch('/api/game/start', { method: 'POST' });
-      const data = await res.json();
-      setSessionToken(data.sessionToken);
-    } catch (e) {
-      console.error("Failed to start secure game session", e);
-    }
   };
 
   const handleRestart = () => {
@@ -1086,15 +921,11 @@ export default function App() {
               <button 
                 onClick={() => {
                   setAccessibilityMode(!accessibilityMode);
-                  savePreferences({ accessibilityMode: !accessibilityMode });
                 }} 
                 className={`p-3 rounded-full border transition-colors shadow-lg ${accessibilityMode ? 'bg-[#00f3ff] text-black border-[#00f3ff]' : 'bg-zinc-900 border-zinc-700 text-white hover:border-[#00f3ff] hover:text-[#00f3ff]'}`}
                 title="Mode Accessibilité (Désactive les flashs et secousses)"
               >
                 {accessibilityMode ? <VolumeX size={24} /> : <Volume2 size={24} />}
-              </button>
-              <button onClick={() => setCurrentScreen('dashboard')} className="p-3 bg-zinc-900 border border-zinc-700 rounded-full text-white hover:border-[#00f3ff] hover:text-[#00f3ff] transition-colors shadow-lg">
-                <UserIcon size={24} />
               </button>
             </div>
 
@@ -1164,84 +995,13 @@ export default function App() {
 
             <div className="p-8 max-w-6xl mx-auto w-full grid grid-cols-1 lg:grid-cols-3 gap-8">
               
-              {/* Profile Section */}
-              <div className="lg:col-span-1 space-y-8">
-                <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl">
-                  <h3 className="text-xl font-bold text-[#00f3ff] mb-6 flex items-center gap-2"><UserIcon /> Profil</h3>
-                  {user ? (
-                    <div className="space-y-6">
-                      <div className="flex items-center gap-4">
-                        <img src={user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`} alt="Avatar" className="w-20 h-20 rounded-full border-2 border-zinc-700 object-cover" referrerPolicy="no-referrer" />
-                        <div className="flex-1 min-w-0">
-                          {isEditingProfile ? (
-                            <input type="text" value={editName} onChange={e => setEditName(e.target.value)} className="bg-black border border-zinc-700 text-white px-3 py-1 rounded w-full mb-2" placeholder="Pseudo" />
-                          ) : (
-                            <div className="text-2xl font-bold text-white truncate">{user.displayName || (user.isAnonymous ? 'Joueur Invité' : 'Anonyme')}</div>
-                          )}
-                          <div className="text-sm text-zinc-500 truncate">{user.isAnonymous ? 'Compte temporaire' : user.email}</div>
-                        </div>
-                      </div>
-                      
-                      {isEditingProfile && (
-                        <div>
-                          <label className="block text-xs text-zinc-500 mb-1">URL de la photo de profil</label>
-                          <input type="text" value={editPhotoUrl} onChange={e => setEditPhotoUrl(e.target.value)} className="bg-black border border-zinc-700 text-white px-3 py-2 rounded w-full text-sm" placeholder="https://..." />
-                        </div>
-                      )}
-
-                      <div className="flex gap-2">
-                        {isEditingProfile ? (
-                          <button onClick={handleUpdateProfile} className="flex-1 bg-[#00ff44] text-black py-2 rounded font-bold flex items-center justify-center gap-2"><Check size={16}/> Enregistrer</button>
-                        ) : (
-                          <button onClick={() => setIsEditingProfile(true)} className="flex-1 bg-zinc-800 text-white py-2 rounded font-bold hover:bg-zinc-700 flex items-center justify-center gap-2"><Edit2 size={16}/> Modifier</button>
-                        )}
-                        <button onClick={logOut} className="px-4 bg-red-900/30 text-red-500 rounded hover:bg-red-900/50 font-bold">Déconnexion</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-center py-8">
-                      <p className="text-zinc-400 mb-6">Connectez-vous pour sauvegarder vos scores et personnaliser votre profil.</p>
-                      <button 
-                        onClick={handleLogin} 
-                        disabled={isLoggingIn}
-                        className={`w-full bg-white text-black py-3 rounded-full font-bold transition-colors flex items-center justify-center gap-2 mb-4 ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : 'hover:bg-zinc-200'}`}
-                      >
-                        <svg className="w-5 h-5" viewBox="0 0 24 24">
-                          <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                          <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                          <path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
-                          <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
-                        </svg>
-                        {isLoggingIn ? 'Connexion...' : 'Connexion Google'}
-                      </button>
-                      <button 
-                        onClick={handleGuestLogin} 
-                        disabled={isLoggingIn}
-                        className={`w-full bg-zinc-800 text-white py-3 rounded-full font-bold transition-colors flex items-center justify-center gap-2 border border-zinc-700 ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : 'hover:bg-zinc-700'}`}
-                      >
-                        <UserIcon size={20} />
-                        Jouer en tant qu'invité
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Personal Best */}
-                <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex items-center justify-between">
-                  <div>
-                    <h3 className="text-zinc-400 font-bold mb-1">Meilleur Score</h3>
-                    <div className="text-4xl font-black text-[#ffff00]">{personalBest}</div>
-                  </div>
-                  <Trophy size={48} className="text-zinc-800" />
-                </div>
-
-                {/* Customization Section */}
-                <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl space-y-6">
-                  <h3 className="text-xl font-bold text-[#ff00ff] flex items-center gap-2">
-                    <Edit2 className="w-5 h-5" /> Personnalisation
-                  </h3>
-                  
-                  <div className="space-y-4">
+              {/* Customization Section */}
+              <div className="lg:col-span-3 bg-zinc-900 border border-zinc-800 p-6 rounded-2xl space-y-6">
+                <h3 className="text-xl font-bold text-[#ff00ff] flex items-center gap-2">
+                  <Edit2 className="w-5 h-5" /> Personnalisation
+                </h3>
+                
+                <div className="space-y-4">
                     <div>
                       <span className="text-zinc-300 block mb-2 text-sm">Couleur du Vaisseau</span>
                       <div className="flex gap-3">
@@ -1250,7 +1010,6 @@ export default function App() {
                             key={color}
                             onClick={() => {
                               setPlayerColor(color);
-                              savePreferences({ playerColor: color });
                             }}
                             className={`w-8 h-8 rounded-full border-2 transition-transform ${playerColor === color ? 'scale-125 border-white' : 'border-transparent'}`}
                             style={{ backgroundColor: color, boxShadow: playerColor === color ? `0 0 10px ${color}` : 'none' }}
@@ -1267,7 +1026,6 @@ export default function App() {
                             key={style}
                             onClick={() => {
                               setParticleStyle(style);
-                              savePreferences({ particleStyle: style });
                             }}
                             className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${particleStyle === style ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}
                           >
@@ -1283,7 +1041,6 @@ export default function App() {
                         <button
                           onClick={() => {
                             setBgTheme('classic');
-                            savePreferences({ bgTheme: 'classic' });
                           }}
                           className={`w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${bgTheme === 'classic' ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}
                         >
@@ -1291,29 +1048,19 @@ export default function App() {
                         </button>
                         <button
                           onClick={() => {
-                            if (personalBest >= 5000) {
-                              setBgTheme('grid');
-                              savePreferences({ bgTheme: 'grid' });
-                            }
+                            setBgTheme('grid');
                           }}
-                          disabled={personalBest < 5000}
-                          className={`w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors flex justify-between items-center ${bgTheme === 'grid' ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'} ${personalBest < 5000 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          className={`w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors flex justify-between items-center ${bgTheme === 'grid' ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}
                         >
                           <span>Grille Néon</span>
-                          {personalBest < 5000 && <span className="text-xs text-[#ff003c]">Débloqué à 5000 pts</span>}
                         </button>
                         <button
                           onClick={() => {
-                            if (personalBest >= 10000) {
-                              setBgTheme('matrix');
-                              savePreferences({ bgTheme: 'matrix' });
-                            }
+                            setBgTheme('matrix');
                           }}
-                          disabled={personalBest < 10000}
-                          className={`w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors flex justify-between items-center ${bgTheme === 'matrix' ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'} ${personalBest < 10000 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          className={`w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors flex justify-between items-center ${bgTheme === 'matrix' ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}
                         >
                           <span>Matrice Cyberpunk</span>
-                          {personalBest < 10000 && <span className="text-xs text-[#ff003c]">Débloqué à 10000 pts</span>}
                         </button>
                       </div>
                     </div>
@@ -1335,7 +1082,6 @@ export default function App() {
                         <input type="range" min="0" max="1" step="0.05" value={volume} onChange={(e) => {
                           const val = parseFloat(e.target.value);
                           setVolume(val);
-                          savePreferences({ volume: val });
                         }} className="w-full accent-[#00f3ff]" />
                         <Volume2 size={18} className="text-zinc-500" />
                       </div>
@@ -1355,7 +1101,6 @@ export default function App() {
                       <span className="text-zinc-300">Particules & Explosions</span>
                       <button onClick={() => {
                         setParticlesEnabled(!particlesEnabled);
-                        savePreferences({ particlesEnabled: !particlesEnabled });
                       }} className={`w-12 h-6 rounded-full transition-colors relative ${particlesEnabled ? 'bg-[#00f3ff]' : 'bg-zinc-700'}`}>
                         <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${particlesEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
                       </button>
@@ -1365,7 +1110,6 @@ export default function App() {
                       <span className="text-zinc-300">Secousses d'écran</span>
                       <button onClick={() => {
                         setShakeEnabled(!shakeEnabled);
-                        savePreferences({ shakeEnabled: !shakeEnabled });
                       }} className={`w-12 h-6 rounded-full transition-colors relative ${shakeEnabled ? 'bg-[#00f3ff]' : 'bg-zinc-700'}`}>
                         <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${shakeEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
                       </button>
@@ -1373,38 +1117,9 @@ export default function App() {
                   </div>
                 </div>
               </div>
-
-              {/* Leaderboard Section */}
-              <div className="lg:col-span-2 bg-zinc-900 border border-zinc-800 p-6 rounded-2xl">
-                <h3 className="text-2xl font-black text-white mb-6 tracking-widest flex items-center gap-3">
-                  <Trophy className="text-[#ffff00]" /> TOP 10 MONDIAL
-                </h3>
-                
-                <div className="space-y-2">
-                  {leaderboard.map((entry, index) => (
-                    <div key={entry.id} className="flex items-center p-4 bg-black/50 rounded-xl border border-zinc-800/50 hover:border-zinc-700 transition-colors">
-                      <div className={`w-12 text-2xl font-black ${index === 0 ? 'text-[#ffff00]' : index === 1 ? 'text-zinc-300' : index === 2 ? 'text-amber-600' : 'text-zinc-600'}`}>
-                        #{index + 1}
-                      </div>
-                      <div className="flex-1 flex items-center gap-4">
-                        <div className="font-bold text-lg text-white">{entry.displayName}</div>
-                        <div className="text-xs text-zinc-500 bg-zinc-800 px-2 py-1 rounded">Vague {entry.wave}</div>
-                      </div>
-                      <div className="text-3xl font-black text-[#00f3ff] tracking-tighter">
-                        {entry.score}
-                      </div>
-                    </div>
-                  ))}
-                  {leaderboard.length === 0 && (
-                    <div className="text-center py-12 text-zinc-500">Aucun score enregistré pour le moment.</div>
-                  )}
-                </div>
-              </div>
-
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
       {/* Pause Screen */}
       <AnimatePresence>
@@ -1440,33 +1155,6 @@ export default function App() {
             
             <div className="text-2xl text-white mb-8">
               Score Final : <span className="text-[#00f3ff] font-bold">{score}</span>
-            </div>
-
-            {/* Leaderboard */}
-            <div className="bg-black/50 border border-zinc-800 rounded-xl p-6 mb-8 w-full max-w-md">
-              <h3 className="text-xl font-bold text-white mb-4 text-center tracking-widest">TOP SCORES</h3>
-              {leaderboard.length > 0 ? (
-                <div className="space-y-3">
-                  {leaderboard.map((entry, index) => (
-                    <div key={entry.id} className="flex justify-between items-center text-sm">
-                      <div className="flex items-center gap-3">
-                        <span className={`font-bold ${index === 0 ? 'text-yellow-400' : index === 1 ? 'text-zinc-300' : index === 2 ? 'text-amber-600' : 'text-zinc-500'}`}>
-                          #{index + 1}
-                        </span>
-                        <span className="text-white">{entry.displayName}</span>
-                      </div>
-                      <div className="text-[#00f3ff] font-mono">{entry.score}</div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-zinc-500 text-center text-sm">Aucun score enregistré</div>
-              )}
-              {!user && (
-                <div className="mt-4 text-center text-xs text-zinc-400">
-                  Connectez-vous pour sauvegarder votre score !
-                </div>
-              )}
             </div>
 
             {deathMessage && (
