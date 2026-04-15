@@ -305,6 +305,11 @@ export default function App() {
       comboMessage: '',
       comboMessageTimer: 0,
       comboScale: 1,
+      accessibilityMode: accessibilityMode,
+      tutorialStep: isTutorial ? 0 : -1,
+      tutorialTimer: 0,
+      tutorialEnemySpawned: false,
+      tutorialPowerUpSpawned: false,
     };
 
     const spawnEnemy = () => {
@@ -511,7 +516,7 @@ export default function App() {
       }
 
       // Spawning logic
-      if (!isTutorial || state.frames > 600) {
+      if (!isTutorial) {
         const isBossAlive = state.enemies.some(e => e.type === 'boss');
         const spawnRateMultiplier = difficulty === 'easy' ? 1.5 : difficulty === 'hard' ? 0.7 : 1.0;
         const baseSpawnRate = Math.max(15, 80 - state.wave * 5);
@@ -523,12 +528,63 @@ export default function App() {
       }
 
       // Tutorial Logic
-      if (isTutorial) {
-        if (state.frames < 180) setTutorialText("Utilisez le joystick ou glissez pour vous déplacer.");
-        else if (state.frames < 360) setTutorialText("Touchez l'écran pour tirer dans cette direction.");
-        else if (state.frames < 600) setTutorialText("Survivez aux vagues d'ennemis !");
-        else if (state.frames > 1200) setIsTutorial(false);
-      } else {
+      if (isTutorial && state.player) {
+        if (state.tutorialStep === 0) {
+          setTutorialText("Utilisez ZQSD, les flèches ou le joystick pour vous déplacer.");
+          if (state.joystick.active || Math.abs(state.player.x - canvas.width / 2) > 50 || Math.abs(state.player.y - canvas.height / 2) > 50) {
+            state.tutorialTimer++;
+            if (state.tutorialTimer > 60) {
+              state.tutorialStep = 1;
+              state.tutorialTimer = 0;
+            }
+          }
+        } else if (state.tutorialStep === 1) {
+          setTutorialText("Utilisez la souris ou touchez l'écran pour tirer.");
+          if (state.isShooting) {
+            state.tutorialTimer++;
+            if (state.tutorialTimer > 30) {
+              state.tutorialStep = 2;
+              state.tutorialTimer = 0;
+            }
+          }
+        } else if (state.tutorialStep === 2) {
+          setTutorialText("Détruisez cet ennemi d'entraînement !");
+          if (!state.tutorialEnemySpawned) {
+            const enemy = new Enemy(canvas.width / 2, canvas.height / 4, 0.5, 'chaser');
+            enemy.hp = 3;
+            enemy.maxHp = 3;
+            state.enemies.push(enemy);
+            state.tutorialEnemySpawned = true;
+          }
+          if (state.enemies.length === 0 && state.tutorialEnemySpawned) {
+             state.tutorialStep = 3;
+             state.tutorialTimer = 0;
+          }
+        } else if (state.tutorialStep === 3) {
+          setTutorialText("Ramassez le bonus pour améliorer votre vaisseau !");
+          if (!state.tutorialPowerUpSpawned) {
+             state.powerUps.push(new PowerUp(canvas.width / 2, canvas.height / 4, 'spread'));
+             state.tutorialPowerUpSpawned = true;
+          }
+          if (state.powerUps.length === 0 && state.tutorialPowerUpSpawned) {
+            state.tutorialStep = 4;
+            state.tutorialTimer = 0;
+          }
+        } else if (state.tutorialStep === 4) {
+          setTutorialText("Préparez-vous, la vraie bataille commence !");
+          state.tutorialTimer++;
+          if (state.tutorialTimer > 120) {
+            setIsTutorial(false);
+            setTutorialText('');
+            state.tutorialStep = -1;
+            // Reset score and wave for the real game start
+            state.score = 0;
+            setScore(0);
+            state.wave = 1;
+            setWave(1);
+          }
+        }
+      } else if (!isTutorial) {
         setTutorialText('');
       }
 
