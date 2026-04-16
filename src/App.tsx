@@ -5,10 +5,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Pause, Play, Settings, User as UserIcon, Trophy, Edit2, Check, X, Volume2, VolumeX, Info } from 'lucide-react';
-import { auth, db, signInWithGoogle, signInAsGuest, logOut } from './firebase';
-import { onAuthStateChanged, User, updateProfile } from 'firebase/auth';
-import { collection, query, orderBy, limit, onSnapshot, serverTimestamp, where, getDocs, doc, setDoc, getDoc } from 'firebase/firestore';
+import { Pause, Play, Volume2, VolumeX } from 'lucide-react';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { Player, Projectile, PowerUp, Enemy, Particle, PowerUpType, Difficulty, EnemyType } from './game/entities';
 import { audio } from './game/AudioEngine';
@@ -25,14 +22,11 @@ export default function App() {
   const [isPaused, setIsPaused] = useState(false);
   const [gameId, setGameId] = useState(0);
   const [deathMessage, setDeathMessage] = useState<string | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [leaderboard, setLeaderboard] = useState<any[]>([]);
   const [difficulty, setDifficulty] = useState<Difficulty>('medium');
-  const [currentScreen, setCurrentScreen] = useState<'home' | 'game' | 'dashboard'>('home');
+  const [currentScreen, setCurrentScreen] = useState<'home' | 'game'>('home');
   const [isTutorial, setIsTutorial] = useState(false);
   const [tutorialText, setTutorialText] = useState('');
   const [accessibilityMode, setAccessibilityMode] = useState(false);
-  const [sessionToken, setSessionToken] = useState<string | null>(null);
   
   // Settings & Customization
   const [volume, setVolume] = useState(0.5);
@@ -40,168 +34,12 @@ export default function App() {
   const [shakeEnabled, setShakeEnabled] = useState(true);
   const [playerColor, setPlayerColor] = useState('#00f3ff');
   const [particleStyle, setParticleStyle] = useState<'circle' | 'square' | 'star'>('circle');
-  const [bgTheme, setBgTheme] = useState<'classic' | 'grid' | 'matrix'>('classic');
-  const [isFullscreen, setIsFullscreen] = useState(false);
-
-  // Profile
-  const [personalBest, setPersonalBest] = useState(0);
-  const [isEditingProfile, setIsEditingProfile] = useState(false);
-  const [editName, setEditName] = useState('');
-  const [editPhotoUrl, setEditPhotoUrl] = useState('');
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [bgTheme, setBgTheme] = useState<'classic' | 'grid' | 'matrix' | 'forest' | 'sky'>('classic');
 
   // Apply volume
   useEffect(() => {
     audio.setVolume(volume);
   }, [volume]);
-
-  // Fetch PB and Preferences
-  useEffect(() => {
-    const fetchUserData = async () => {
-      if (!user) return;
-      
-      // Fetch PB
-      const q = query(collection(db, 'scores'), where('uid', '==', user.uid), orderBy('score', 'desc'), limit(1));
-      const snap = await getDocs(q);
-      if (!snap.empty) {
-        setPersonalBest(snap.docs[0].data().score);
-      }
-
-      // Fetch Preferences
-      try {
-        const userDocRef = doc(db, 'users', user.uid);
-        const userDoc = await getDoc(userDocRef);
-        if (userDoc.exists()) {
-          const data = userDoc.data();
-          if (data.playerColor) setPlayerColor(data.playerColor);
-          if (data.particleStyle) setParticleStyle(data.particleStyle);
-          if (data.bgTheme) setBgTheme(data.bgTheme);
-          if (data.volume !== undefined) setVolume(data.volume);
-          if (data.particlesEnabled !== undefined) setParticlesEnabled(data.particlesEnabled);
-          if (data.shakeEnabled !== undefined) setShakeEnabled(data.shakeEnabled);
-          if (data.accessibilityMode !== undefined) setAccessibilityMode(data.accessibilityMode);
-        }
-      } catch (error) {
-        console.error("Error fetching user preferences:", error);
-      }
-    };
-    
-    fetchUserData();
-  }, [user]);
-
-  // Save Preferences
-  const savePreferences = async (newPrefs: any) => {
-    if (!user) return;
-    try {
-      const userDocRef = doc(db, 'users', user.uid);
-      await setDoc(userDocRef, {
-        uid: user.uid,
-        playerColor,
-        particleStyle,
-        bgTheme,
-        volume,
-        particlesEnabled,
-        shakeEnabled,
-        accessibilityMode,
-        updatedAt: serverTimestamp(),
-        ...newPrefs
-      }, { merge: true });
-    } catch (error) {
-      console.error("Error saving preferences:", error);
-    }
-  };
-
-  // Firebase Auth Listener
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      if (currentUser) {
-        setEditName(currentUser.displayName || '');
-        setEditPhotoUrl(currentUser.photoURL || '');
-      }
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Firebase Leaderboard Listener
-  useEffect(() => {
-    const q = query(collection(db, 'scores'), orderBy('score', 'desc'), limit(10));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const scoresData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setLeaderboard(scoresData);
-    }, (error) => {
-      console.error("Error fetching leaderboard:", error);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  const handleLogin = async () => {
-    if (isLoggingIn) return;
-    setIsLoggingIn(true);
-    try {
-      await signInWithGoogle();
-    } catch (error) {
-      // Error handled in firebase.ts
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleGuestLogin = async () => {
-    if (isLoggingIn) return;
-    setIsLoggingIn(true);
-    try {
-      await signInAsGuest();
-    } catch (error) {
-      // Error handled in firebase.ts
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleUpdateProfile = async () => {
-    if (!user) return;
-    try {
-      await updateProfile(user, { displayName: editName, photoURL: editPhotoUrl });
-      setUser({ ...user, displayName: editName, photoURL: editPhotoUrl } as User);
-      setIsEditingProfile(false);
-    } catch (error) {
-      console.error("Error updating profile:", error);
-    }
-  };
-
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(err => console.error("Error attempting to enable fullscreen:", err));
-      setIsFullscreen(true);
-    } else {
-      if (document.exitFullscreen) {
-        document.exitFullscreen();
-        setIsFullscreen(false);
-      }
-    }
-  };
-
-  const saveScore = async (finalScore: number, finalWave: number) => {
-    if (!user || finalScore === 0) return;
-    try {
-      const token = await user.getIdToken();
-      await fetch('/api/scores', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          uid: user.uid,
-          displayName: user.displayName || (user.isAnonymous ? 'Joueur Invité' : 'Anonyme'),
-          score: finalScore,
-          wave: finalWave,
-          token,
-          sessionToken
-        })
-      });
-    } catch (error) {
-      console.error("Error saving score:", error);
-    }
-  };
 
   const gameState = useRef({
     player: null as Player | null,
@@ -220,7 +58,6 @@ export default function App() {
     isShooting: false,
     shootCooldown: 0,
     frames: 0,
-    bossSpawnedForWave: 0,
     bossesKilled: 0,
     cloneTimer: 0,
     clone: { x: window.innerWidth / 2, y: window.innerHeight / 2, angle: 0 },
@@ -303,7 +140,9 @@ export default function App() {
       isShooting: false,
       shootCooldown: 0,
       frames: 0,
-      bossSpawnedForWave: 0,
+      bossesKilled: 0,
+      cloneTimer: 0,
+      clone: { x: canvas.width / 2, y: canvas.height / 2, angle: 0 },
       joystick: { active: false, dx: 0, dy: 0, touchId: -1 },
       aimTouchId: -1,
       extraBonusDuration: 0,
@@ -323,8 +162,7 @@ export default function App() {
     const spawnEnemy = () => {
       const { wave } = gameState.current;
       
-      if (wave > 0 && wave % 5 === 0 && gameState.current.bossSpawnedForWave !== wave) {
-        gameState.current.bossSpawnedForWave = wave;
+      if (wave > 0 && wave % 5 === 0 && !gameState.current.enemies.some(e => e.type === 'boss')) {
         const boss = new Enemy(canvas.width / 2, -100, 1.5, 'boss');
         boss.hp = 50 + wave * 10;
         boss.maxHp = boss.hp;
@@ -402,6 +240,25 @@ export default function App() {
           const x = Math.random() * canvas.width;
           const y = (state.frames * (Math.random() * 5 + 2)) % canvas.height;
           ctx.fillRect(x, y, 2, 10 + Math.random() * 20);
+        }
+      } else if (bgTheme === 'forest') {
+        ctx.fillStyle = 'rgba(5, 20, 5, 0.2)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = 'rgba(20, 80, 20, 0.1)';
+        for(let i = 0; i < 8; i++) {
+          const speed = 1 + (i % 3) * 0.5;
+          const x = (i * 200 + state.frames * speed) % (canvas.width + 100) - 50;
+          ctx.fillRect(x, 0, 40 + (i % 3) * 20, canvas.height);
+        }
+      } else if (bgTheme === 'sky') {
+        ctx.fillStyle = 'rgba(5, 10, 25, 0.2)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        for(let i = 0; i < 40; i++) {
+          const speed = 0.5 + (i % 5) * 0.2;
+          const x = (i * 73 + state.frames * speed) % canvas.width;
+          const y = (i * 113) % canvas.height;
+          ctx.fillRect(x, y, speed * 2, speed * 2);
         }
       }
 
@@ -542,18 +399,32 @@ export default function App() {
           if (state.joystick.active || Math.abs(state.player.x - canvas.width / 2) > 50 || Math.abs(state.player.y - canvas.height / 2) > 50) {
             state.tutorialTimer++;
             if (state.tutorialTimer > 60) {
-              state.tutorialStep = 1;
+              state.tutorialStep = 0.5;
               state.tutorialTimer = 0;
             }
+          }
+        } else if (state.tutorialStep === 0.5) {
+          setTutorialText("Parfait !");
+          state.tutorialTimer++;
+          if (state.tutorialTimer > 60) {
+            state.tutorialStep = 1;
+            state.tutorialTimer = 0;
           }
         } else if (state.tutorialStep === 1) {
           setTutorialText("Utilisez la souris ou touchez l'écran pour tirer.");
           if (state.isShooting) {
             state.tutorialTimer++;
             if (state.tutorialTimer > 30) {
-              state.tutorialStep = 2;
+              state.tutorialStep = 1.5;
               state.tutorialTimer = 0;
             }
+          }
+        } else if (state.tutorialStep === 1.5) {
+          setTutorialText("Bien joué !");
+          state.tutorialTimer++;
+          if (state.tutorialTimer > 60) {
+            state.tutorialStep = 2;
+            state.tutorialTimer = 0;
           }
         } else if (state.tutorialStep === 2) {
           setTutorialText("Détruisez cet ennemi d'entraînement !");
@@ -565,8 +436,15 @@ export default function App() {
             state.tutorialEnemySpawned = true;
           }
           if (state.enemies.length === 0 && state.tutorialEnemySpawned) {
-             state.tutorialStep = 3;
+             state.tutorialStep = 2.5;
              state.tutorialTimer = 0;
+          }
+        } else if (state.tutorialStep === 2.5) {
+          setTutorialText("Excellent !");
+          state.tutorialTimer++;
+          if (state.tutorialTimer > 60) {
+            state.tutorialStep = 3;
+            state.tutorialTimer = 0;
           }
         } else if (state.tutorialStep === 3) {
           setTutorialText("Ramassez le bonus pour améliorer votre vaisseau !");
@@ -575,6 +453,13 @@ export default function App() {
              state.tutorialPowerUpSpawned = true;
           }
           if (state.powerUps.length === 0 && state.tutorialPowerUpSpawned) {
+            state.tutorialStep = 3.5;
+            state.tutorialTimer = 0;
+          }
+        } else if (state.tutorialStep === 3.5) {
+          setTutorialText("Génial !");
+          state.tutorialTimer++;
+          if (state.tutorialTimer > 60) {
             state.tutorialStep = 4;
             state.tutorialTimer = 0;
           }
@@ -600,20 +485,6 @@ export default function App() {
       if (state.score >= state.wave * 500) {
         state.wave++;
         setWave(state.wave);
-        
-        // Update session token to track wave progression securely
-        if (sessionToken) {
-          fetch('/api/game/wave', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionToken, wave: state.wave })
-          })
-          .then(res => res.json())
-          .then(data => {
-            if (data.sessionToken) setSessionToken(data.sessionToken);
-          })
-          .catch(err => console.error("Failed to update wave session", err));
-        }
         
         const extraSeconds = Math.random() < 0.5 ? 10 : 5;
         state.extraBonusDuration += extraSeconds * 60;
@@ -677,7 +548,6 @@ export default function App() {
               createExplosion(state.player.x, state.player.y, '#00f3ff', 50);
               setIsGameOver(true);
               fetchDeathMessage(state.score, state.wave);
-              saveScore(state.score, state.wave);
             }
           }
         }
@@ -828,6 +698,88 @@ export default function App() {
         drawBar('BOUCLIER', state.player.shieldTimer, 600, '#0055ff');
       }
 
+      // Tutorial Visual Cues
+      if (isTutorial && state.player) {
+        ctx.save();
+        const pulse = Math.sin(Date.now() / 200) * 0.5 + 0.5;
+        
+        if (state.tutorialStep === 0) {
+          // Draw movement target area
+          ctx.beginPath();
+          ctx.arc(canvas.width / 2, canvas.height / 2, 50, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(0, 255, 255, ${0.3 + pulse * 0.5})`;
+          ctx.lineWidth = 3;
+          ctx.setLineDash([10, 10]);
+          ctx.stroke();
+          
+          // Draw arrows pointing outwards
+          ctx.translate(canvas.width / 2, canvas.height / 2);
+          for (let i = 0; i < 4; i++) {
+            ctx.rotate(Math.PI / 2);
+            ctx.beginPath();
+            ctx.moveTo(0, -60 - pulse * 10);
+            ctx.lineTo(-10, -50 - pulse * 10);
+            ctx.lineTo(10, -50 - pulse * 10);
+            ctx.closePath();
+            ctx.fillStyle = `rgba(0, 255, 255, ${0.5 + pulse * 0.5})`;
+            ctx.fill();
+          }
+          ctx.setLineDash([]);
+        } else if (state.tutorialStep === 1) {
+          // Draw crosshair at mouse position
+          const mx = state.mouseX;
+          const my = state.mouseY;
+          ctx.beginPath();
+          ctx.arc(mx, my, 20 + pulse * 10, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(255, 0, 255, ${0.5 + pulse * 0.5})`;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          
+          ctx.beginPath();
+          ctx.moveTo(mx - 30 - pulse * 10, my);
+          ctx.lineTo(mx + 30 + pulse * 10, my);
+          ctx.moveTo(mx, my - 30 - pulse * 10);
+          ctx.lineTo(mx, my + 30 + pulse * 10);
+          ctx.stroke();
+        } else if (state.tutorialStep === 2 && state.enemies.length > 0) {
+          // Draw arrow pointing to enemy
+          const enemy = state.enemies[0];
+          const dx = enemy.x - state.player.x;
+          const dy = enemy.y - state.player.y;
+          const angle = Math.atan2(dy, dx);
+          const dist = Math.hypot(dx, dy);
+          
+          if (dist > 100) {
+            ctx.translate(state.player.x + Math.cos(angle) * 80, state.player.y + Math.sin(angle) * 80);
+            ctx.rotate(angle);
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(-20, -10);
+            ctx.lineTo(-20, 10);
+            ctx.closePath();
+            ctx.fillStyle = `rgba(255, 0, 60, ${0.5 + pulse * 0.5})`;
+            ctx.fill();
+          }
+          
+          // Highlight enemy
+          ctx.resetTransform();
+          ctx.beginPath();
+          ctx.arc(enemy.x, enemy.y, enemy.radius + 15 + pulse * 5, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(255, 0, 60, ${0.5 + pulse * 0.5})`;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        } else if (state.tutorialStep === 3 && state.powerUps.length > 0) {
+          // Highlight powerup
+          const powerUp = state.powerUps[0];
+          ctx.beginPath();
+          ctx.arc(powerUp.x, powerUp.y, powerUp.radius + 15 + pulse * 5, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(0, 255, 60, ${0.5 + pulse * 0.5})`;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
       animationId = requestAnimationFrame(loop);
     };
 
@@ -936,15 +888,6 @@ export default function App() {
     setIsPaused(false);
     setDeathMessage(null);
     setGameId((id) => id + 1);
-    
-    // Fetch a new game session token from the backend
-    try {
-      const res = await fetch('/api/game/start', { method: 'POST' });
-      const data = await res.json();
-      setSessionToken(data.sessionToken);
-    } catch (e) {
-      console.error("Failed to start secure game session", e);
-    }
   };
 
   const handleRestart = () => {
@@ -1094,15 +1037,11 @@ export default function App() {
               <button 
                 onClick={() => {
                   setAccessibilityMode(!accessibilityMode);
-                  savePreferences({ accessibilityMode: !accessibilityMode });
                 }} 
                 className={`p-3 rounded-full border transition-colors shadow-lg ${accessibilityMode ? 'bg-[#00f3ff] text-black border-[#00f3ff]' : 'bg-zinc-900 border-zinc-700 text-white hover:border-[#00f3ff] hover:text-[#00f3ff]'}`}
                 title="Mode Accessibilité (Désactive les flashs et secousses)"
               >
                 {accessibilityMode ? <VolumeX size={24} /> : <Volume2 size={24} />}
-              </button>
-              <button onClick={() => setCurrentScreen('dashboard')} className="p-3 bg-zinc-900 border border-zinc-700 rounded-full text-white hover:border-[#00f3ff] hover:text-[#00f3ff] transition-colors shadow-lg">
-                <UserIcon size={24} />
               </button>
             </div>
 
@@ -1149,266 +1088,19 @@ export default function App() {
               >
                 Tutoriel (20s)
               </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
-      {/* Dashboard Screen */}
-      <AnimatePresence>
-        {currentScreen === 'dashboard' && (
-          <motion.div
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 50 }}
-            className="absolute inset-0 bg-black z-50 flex flex-col overflow-y-auto"
-          >
-            <div className="sticky top-0 bg-black/80 backdrop-blur-md p-6 border-b border-zinc-800 flex justify-between items-center z-10">
-              <h2 className="text-3xl font-black text-white tracking-widest">DASHBOARD</h2>
-              <button onClick={() => setCurrentScreen('home')} className="p-2 text-zinc-400 hover:text-white">
-                <X size={32} />
-              </button>
-            </div>
-
-            <div className="p-8 max-w-6xl mx-auto w-full grid grid-cols-1 lg:grid-cols-3 gap-8">
-              
-              {/* Profile Section */}
-              <div className="lg:col-span-1 space-y-8">
-                <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl">
-                  <h3 className="text-xl font-bold text-[#00f3ff] mb-6 flex items-center gap-2"><UserIcon /> Profil</h3>
-                  {user ? (
-                    <div className="space-y-6">
-                      <div className="flex items-center gap-4">
-                        <img src={user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`} alt="Avatar" className="w-20 h-20 rounded-full border-2 border-zinc-700 object-cover" referrerPolicy="no-referrer" />
-                        <div className="flex-1 min-w-0">
-                          {isEditingProfile ? (
-                            <input type="text" value={editName} onChange={e => setEditName(e.target.value)} className="bg-black border border-zinc-700 text-white px-3 py-1 rounded w-full mb-2" placeholder="Pseudo" />
-                          ) : (
-                            <div className="text-2xl font-bold text-white truncate">{user.displayName || (user.isAnonymous ? 'Joueur Invité' : 'Anonyme')}</div>
-                          )}
-                          <div className="text-sm text-zinc-500 truncate">{user.isAnonymous ? 'Compte temporaire' : user.email}</div>
-                        </div>
-                      </div>
-                      
-                      {isEditingProfile && (
-                        <div>
-                          <label className="block text-xs text-zinc-500 mb-1">URL de la photo de profil</label>
-                          <input type="text" value={editPhotoUrl} onChange={e => setEditPhotoUrl(e.target.value)} className="bg-black border border-zinc-700 text-white px-3 py-2 rounded w-full text-sm" placeholder="https://..." />
-                        </div>
-                      )}
-
-                      <div className="flex gap-2">
-                        {isEditingProfile ? (
-                          <button onClick={handleUpdateProfile} className="flex-1 bg-[#00ff44] text-black py-2 rounded font-bold flex items-center justify-center gap-2"><Check size={16}/> Enregistrer</button>
-                        ) : (
-                          <button onClick={() => setIsEditingProfile(true)} className="flex-1 bg-zinc-800 text-white py-2 rounded font-bold hover:bg-zinc-700 flex items-center justify-center gap-2"><Edit2 size={16}/> Modifier</button>
-                        )}
-                        <button onClick={logOut} className="px-4 bg-red-900/30 text-red-500 rounded hover:bg-red-900/50 font-bold">Déconnexion</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-center py-8">
-                      <p className="text-zinc-400 mb-6">Connectez-vous pour sauvegarder vos scores et personnaliser votre profil.</p>
-                      <button 
-                        onClick={handleLogin} 
-                        disabled={isLoggingIn}
-                        className={`w-full bg-white text-black py-3 rounded-full font-bold transition-colors flex items-center justify-center gap-2 mb-4 ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : 'hover:bg-zinc-200'}`}
-                      >
-                        <svg className="w-5 h-5" viewBox="0 0 24 24">
-                          <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                          <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                          <path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
-                          <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
-                        </svg>
-                        {isLoggingIn ? 'Connexion...' : 'Connexion Google'}
-                      </button>
-                      <button 
-                        onClick={handleGuestLogin} 
-                        disabled={isLoggingIn}
-                        className={`w-full bg-zinc-800 text-white py-3 rounded-full font-bold transition-colors flex items-center justify-center gap-2 border border-zinc-700 ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : 'hover:bg-zinc-700'}`}
-                      >
-                        <UserIcon size={20} />
-                        Jouer en tant qu'invité
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Personal Best */}
-                <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl flex items-center justify-between">
-                  <div>
-                    <h3 className="text-zinc-400 font-bold mb-1">Meilleur Score</h3>
-                    <div className="text-4xl font-black text-[#ffff00]">{personalBest}</div>
-                  </div>
-                  <Trophy size={48} className="text-zinc-800" />
-                </div>
-
-                {/* Customization Section */}
-                <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl space-y-6">
-                  <h3 className="text-xl font-bold text-[#ff00ff] flex items-center gap-2">
-                    <Edit2 className="w-5 h-5" /> Personnalisation
-                  </h3>
-                  
-                  <div className="space-y-4">
-                    <div>
-                      <span className="text-zinc-300 block mb-2 text-sm">Couleur du Vaisseau</span>
-                      <div className="flex gap-3">
-                        {['#00f3ff', '#ff00ff', '#00ff44', '#ffff00', '#ff003c'].map(color => (
-                          <button
-                            key={color}
-                            onClick={() => {
-                              setPlayerColor(color);
-                              savePreferences({ playerColor: color });
-                            }}
-                            className={`w-8 h-8 rounded-full border-2 transition-transform ${playerColor === color ? 'scale-125 border-white' : 'border-transparent'}`}
-                            style={{ backgroundColor: color, boxShadow: playerColor === color ? `0 0 10px ${color}` : 'none' }}
-                          />
-                        ))}
-                      </div>
-                    </div>
-
-                    <div>
-                      <span className="text-zinc-300 block mb-2 text-sm">Style de Particules</span>
-                      <div className="flex gap-2">
-                        {(['circle', 'square', 'star'] as const).map(style => (
-                          <button
-                            key={style}
-                            onClick={() => {
-                              setParticleStyle(style);
-                              savePreferences({ particleStyle: style });
-                            }}
-                            className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${particleStyle === style ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}
-                          >
-                            {style === 'circle' ? 'Cercle' : style === 'square' ? 'Carré' : 'Étoile'}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div>
-                      <span className="text-zinc-300 block mb-2 text-sm">Thème Visuel (Fond)</span>
-                      <div className="space-y-2">
-                        <button
-                          onClick={() => {
-                            setBgTheme('classic');
-                            savePreferences({ bgTheme: 'classic' });
-                          }}
-                          className={`w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${bgTheme === 'classic' ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}
-                        >
-                          Classique (Vide spatial)
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (personalBest >= 5000) {
-                              setBgTheme('grid');
-                              savePreferences({ bgTheme: 'grid' });
-                            }
-                          }}
-                          disabled={personalBest < 5000}
-                          className={`w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors flex justify-between items-center ${bgTheme === 'grid' ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'} ${personalBest < 5000 ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        >
-                          <span>Grille Néon</span>
-                          {personalBest < 5000 && <span className="text-xs text-[#ff003c]">Débloqué à 5000 pts</span>}
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (personalBest >= 10000) {
-                              setBgTheme('matrix');
-                              savePreferences({ bgTheme: 'matrix' });
-                            }
-                          }}
-                          disabled={personalBest < 10000}
-                          className={`w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors flex justify-between items-center ${bgTheme === 'matrix' ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'} ${personalBest < 10000 ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        >
-                          <span>Matrice Cyberpunk</span>
-                          {personalBest < 10000 && <span className="text-xs text-[#ff003c]">Débloqué à 10000 pts</span>}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Settings */}
-                <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl">
-                  <h3 className="text-xl font-bold text-[#00f3ff] mb-6 flex items-center gap-2"><Settings /> Paramètres</h3>
-                  
-                  <div className="space-y-6">
-                    <div>
-                      <div className="flex justify-between text-sm mb-2">
-                        <span className="text-zinc-300">Volume</span>
-                        <span className="text-zinc-500">{Math.round(volume * 100)}%</span>
-                      </div>
-                      <div className="flex items-center gap-4">
-                        <VolumeX size={18} className="text-zinc-500" />
-                        <input type="range" min="0" max="1" step="0.05" value={volume} onChange={(e) => {
-                          const val = parseFloat(e.target.value);
-                          setVolume(val);
-                          savePreferences({ volume: val });
-                        }} className="w-full accent-[#00f3ff]" />
-                        <Volume2 size={18} className="text-zinc-500" />
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-300">Plein Écran</span>
-                      <button 
-                        onClick={toggleFullscreen}
-                        className={`w-12 h-6 rounded-full transition-colors relative ${isFullscreen ? 'bg-[#00f3ff]' : 'bg-zinc-700'}`}
-                      >
-                        <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${isFullscreen ? 'left-7' : 'left-1'}`} />
-                      </button>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-300">Particules & Explosions</span>
-                      <button onClick={() => {
-                        setParticlesEnabled(!particlesEnabled);
-                        savePreferences({ particlesEnabled: !particlesEnabled });
-                      }} className={`w-12 h-6 rounded-full transition-colors relative ${particlesEnabled ? 'bg-[#00f3ff]' : 'bg-zinc-700'}`}>
-                        <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${particlesEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
-                      </button>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-300">Secousses d'écran</span>
-                      <button onClick={() => {
-                        setShakeEnabled(!shakeEnabled);
-                        savePreferences({ shakeEnabled: !shakeEnabled });
-                      }} className={`w-12 h-6 rounded-full transition-colors relative ${shakeEnabled ? 'bg-[#00f3ff]' : 'bg-zinc-700'}`}>
-                        <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${shakeEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
+              <div className="flex flex-wrap justify-center gap-2 w-full mt-2">
+                <span className="text-zinc-500 text-xs uppercase tracking-widest self-center mr-2 w-full text-center mb-1">Thème:</span>
+                {(['classic', 'grid', 'matrix', 'forest', 'sky'] as const).map(t => (
+                  <button
+                    key={t}
+                    onClick={() => setBgTheme(t)}
+                    className={`px-3 py-1.5 rounded text-xs uppercase tracking-wider border transition-colors ${bgTheme === t ? 'bg-[#00f3ff] text-black border-[#00f3ff]' : 'bg-transparent text-zinc-400 border-zinc-700 hover:border-zinc-500'}`}
+                  >
+                    {t}
+                  </button>
+                ))}
               </div>
-
-              {/* Leaderboard Section */}
-              <div className="lg:col-span-2 bg-zinc-900 border border-zinc-800 p-6 rounded-2xl">
-                <h3 className="text-2xl font-black text-white mb-6 tracking-widest flex items-center gap-3">
-                  <Trophy className="text-[#ffff00]" /> TOP 10 MONDIAL
-                </h3>
-                
-                <div className="space-y-2">
-                  {leaderboard.map((entry, index) => (
-                    <div key={entry.id} className="flex items-center p-4 bg-black/50 rounded-xl border border-zinc-800/50 hover:border-zinc-700 transition-colors">
-                      <div className={`w-12 text-2xl font-black ${index === 0 ? 'text-[#ffff00]' : index === 1 ? 'text-zinc-300' : index === 2 ? 'text-amber-600' : 'text-zinc-600'}`}>
-                        #{index + 1}
-                      </div>
-                      <div className="flex-1 flex items-center gap-4">
-                        <div className="font-bold text-lg text-white">{entry.displayName}</div>
-                        <div className="text-xs text-zinc-500 bg-zinc-800 px-2 py-1 rounded">Vague {entry.wave}</div>
-                      </div>
-                      <div className="text-3xl font-black text-[#00f3ff] tracking-tighter">
-                        {entry.score}
-                      </div>
-                    </div>
-                  ))}
-                  {leaderboard.length === 0 && (
-                    <div className="text-center py-12 text-zinc-500">Aucun score enregistré pour le moment.</div>
-                  )}
-                </div>
-              </div>
-
             </div>
           </motion.div>
         )}
@@ -1448,33 +1140,6 @@ export default function App() {
             
             <div className="text-2xl text-white mb-8">
               Score Final : <span className="text-[#00f3ff] font-bold">{score}</span>
-            </div>
-
-            {/* Leaderboard */}
-            <div className="bg-black/50 border border-zinc-800 rounded-xl p-6 mb-8 w-full max-w-md">
-              <h3 className="text-xl font-bold text-white mb-4 text-center tracking-widest">TOP SCORES</h3>
-              {leaderboard.length > 0 ? (
-                <div className="space-y-3">
-                  {leaderboard.map((entry, index) => (
-                    <div key={entry.id} className="flex justify-between items-center text-sm">
-                      <div className="flex items-center gap-3">
-                        <span className={`font-bold ${index === 0 ? 'text-yellow-400' : index === 1 ? 'text-zinc-300' : index === 2 ? 'text-amber-600' : 'text-zinc-500'}`}>
-                          #{index + 1}
-                        </span>
-                        <span className="text-white">{entry.displayName}</span>
-                      </div>
-                      <div className="text-[#00f3ff] font-mono">{entry.score}</div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-zinc-500 text-center text-sm">Aucun score enregistré</div>
-              )}
-              {!user && (
-                <div className="mt-4 text-center text-xs text-zinc-400">
-                  Connectez-vous pour sauvegarder votre score !
-                </div>
-              )}
             </div>
 
             {deathMessage && (
