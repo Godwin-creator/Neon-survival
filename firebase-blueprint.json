@@ -1,8 +1,8 @@
 {
   "entities": {
-    "Score": {
-      "title": "Score",
-      "description": "A player's high score in the game.",
+    "User": {
+      "title": "User",
+      "description": "A player's profile and personal best score.",
       "type": "object",
       "properties": {
         "uid": {
@@ -13,76 +13,27 @@
           "type": "string",
           "description": "The display name of the player."
         },
-        "score": {
+        "photoURL": {
+          "type": "string",
+          "description": "The avatar URL of the player."
+        },
+        "personalBest": {
           "type": "number",
-          "description": "The score achieved."
-        },
-        "wave": {
-          "type": "number",
-          "description": "The wave reached."
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "When the score was achieved."
-        }
-      },
-      "required": ["uid", "displayName", "score", "wave", "createdAt"]
-    },
-    "UserPreferences": {
-      "title": "UserPreferences",
-      "description": "A player's persistent settings and unlocked themes.",
-      "type": "object",
-      "properties": {
-        "uid": {
-          "type": "string",
-          "description": "The user ID of the player."
-        },
-        "playerColor": {
-          "type": "string",
-          "description": "The selected player ship color."
-        },
-        "particleStyle": {
-          "type": "string",
-          "description": "The selected particle style."
-        },
-        "bgTheme": {
-          "type": "string",
-          "description": "The selected background theme."
-        },
-        "volume": {
-          "type": "number",
-          "description": "The game volume."
-        },
-        "particlesEnabled": {
-          "type": "boolean",
-          "description": "Whether particles are enabled."
-        },
-        "shakeEnabled": {
-          "type": "boolean",
-          "description": "Whether screen shake is enabled."
-        },
-        "accessibilityMode": {
-          "type": "boolean",
-          "description": "Whether accessibility mode is enabled."
+          "description": "The highest score achieved by the player."
         },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
-          "description": "When the preferences were last updated."
+          "description": "When the profile was last updated."
         }
       },
-      "required": ["uid", "playerColor", "particleStyle", "bgTheme", "volume", "particlesEnabled", "shakeEnabled", "accessibilityMode", "updatedAt"]
+      "required": ["uid", "displayName", "personalBest", "updatedAt"]
     }
   },
   "firestore": {
-    "/scores/{scoreId}": {
-      "schema": { "$ref": "#/entities/Score" },
-      "description": "Global leaderboard of scores."
-    },
     "/users/{userId}": {
-      "schema": { "$ref": "#/entities/UserPreferences" },
-      "description": "User preferences and progress."
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles containing their personal best scores."
     }
   }
 }

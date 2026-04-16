@@ -5,10 +5,13 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Pause, Play, Volume2, VolumeX } from 'lucide-react';
+import { Pause, Play, Volume2, VolumeX, Trophy, LogOut, User as UserIcon } from 'lucide-react';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { Player, Projectile, PowerUp, Enemy, Particle, PowerUpType, Difficulty, EnemyType } from './game/entities';
 import { audio } from './game/AudioEngine';
+import { auth, db, signInWithGoogle, logOut } from './firebase';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { collection, doc, setDoc, getDoc, getDocs, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 
 // --- Main Application ---
 
@@ -23,11 +26,17 @@ export default function App() {
   const [gameId, setGameId] = useState(0);
   const [deathMessage, setDeathMessage] = useState<string | null>(null);
   const [difficulty, setDifficulty] = useState<Difficulty>('medium');
-  const [currentScreen, setCurrentScreen] = useState<'home' | 'game'>('home');
+  const [currentScreen, setCurrentScreen] = useState<'home' | 'game' | 'dashboard'>('home');
   const [isTutorial, setIsTutorial] = useState(false);
   const [tutorialText, setTutorialText] = useState('');
   const [accessibilityMode, setAccessibilityMode] = useState(false);
   
+  // Auth & Leaderboard
+  const [user, setUser] = useState<User | null>(null);
+  const [personalBest, setPersonalBest] = useState(0);
+  const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
   // Settings & Customization
   const [volume, setVolume] = useState(0.5);
   const [particlesEnabled, setParticlesEnabled] = useState(true);
@@ -40,6 +49,53 @@ export default function App() {
   useEffect(() => {
     audio.setVolume(volume);
   }, [volume]);
+
+  // Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+      if (currentUser) {
+        try {
+          const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+          if (userDoc.exists()) {
+            setPersonalBest(userDoc.data().personalBest || 0);
+          } else {
+            // Create initial profile
+            await setDoc(doc(db, 'users', currentUser.uid), {
+              uid: currentUser.uid,
+              displayName: currentUser.displayName || 'Joueur Anonyme',
+              photoURL: currentUser.photoURL || '',
+              personalBest: 0,
+              updatedAt: new Date().toISOString()
+            });
+            setPersonalBest(0);
+          }
+        } catch (error) {
+          console.error("Error fetching user data:", error);
+        }
+      } else {
+        setPersonalBest(0);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Leaderboard Listener
+  useEffect(() => {
+    if (!isAuthReady) return;
+    const q = query(collection(db, 'users'), orderBy('personalBest', 'desc'), limit(10));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const scores: any[] = [];
+      snapshot.forEach((doc) => {
+        scores.push({ id: doc.id, ...doc.data() });
+      });
+      setLeaderboard(scores);
+    }, (error) => {
+      console.error("Error fetching leaderboard:", error);
+    });
+    return () => unsubscribe();
+  }, [isAuthReady]);
 
   const gameState = useRef({
     player: null as Player | null,
@@ -548,6 +604,15 @@ export default function App() {
               createExplosion(state.player.x, state.player.y, '#00f3ff', 50);
               setIsGameOver(true);
               fetchDeathMessage(state.score, state.wave);
+              
+              // Save score if it's a new personal best
+              if (user && state.score > personalBest) {
+                setPersonalBest(state.score);
+                setDoc(doc(db, 'users', user.uid), {
+                  personalBest: state.score,
+                  updatedAt: new Date().toISOString()
+                }, { merge: true }).catch(err => console.error("Error saving score:", err));
+              }
             }
           }
         }
@@ -1035,6 +1100,13 @@ export default function App() {
           >
             <div className="absolute top-6 right-6 flex gap-4">
               <button 
+                onClick={() => setCurrentScreen('dashboard')}
+                className="p-3 rounded-full border transition-colors shadow-lg bg-zinc-900 border-zinc-700 text-white hover:border-[#00f3ff] hover:text-[#00f3ff]"
+                title="Tableau de bord"
+              >
+                <Trophy size={24} />
+              </button>
+              <button 
                 onClick={() => {
                   setAccessibilityMode(!accessibilityMode);
                 }} 
@@ -1121,6 +1193,125 @@ export default function App() {
             <p className="text-zinc-300 mt-6 tracking-widest text-lg uppercase">
               Appuyez sur 'P' ou cliquez pour reprendre
             </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Dashboard Screen */}
+      <AnimatePresence>
+        {currentScreen === 'dashboard' && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 flex flex-col items-center bg-black/95 backdrop-blur-md z-50 overflow-y-auto py-12 px-4"
+          >
+            <div className="w-full max-w-4xl flex flex-col gap-8">
+              <div className="flex justify-between items-center">
+                <h2 className="text-4xl font-black text-[#00f3ff] tracking-widest uppercase">Tableau de bord</h2>
+                <button
+                  onClick={() => setCurrentScreen('home')}
+                  className="px-6 py-2 border border-zinc-700 text-zinc-300 hover:text-white hover:border-white transition-colors rounded uppercase tracking-widest text-sm font-bold"
+                >
+                  Retour
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                {/* Profile Section */}
+                <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-8">
+                  <h3 className="text-2xl font-bold text-white mb-6 flex items-center gap-3">
+                    <UserIcon className="text-[#00f3ff]" /> Profil
+                  </h3>
+                  
+                  {user ? (
+                    <div className="flex flex-col gap-6">
+                      <div className="flex items-center gap-4">
+                        {user.photoURL ? (
+                          <img src={user.photoURL} alt="Profile" className="w-16 h-16 rounded-full border-2 border-[#00f3ff]" referrerPolicy="no-referrer" />
+                        ) : (
+                          <div className="w-16 h-16 rounded-full bg-zinc-800 border-2 border-[#00f3ff] flex items-center justify-center">
+                            <UserIcon size={32} className="text-zinc-500" />
+                          </div>
+                        )}
+                        <div>
+                          <div className="text-xl font-bold text-white">{user.displayName}</div>
+                          <div className="text-sm text-zinc-500">{user.email}</div>
+                        </div>
+                      </div>
+                      
+                      <div className="bg-black/50 rounded-lg p-4 border border-zinc-800">
+                        <div className="text-sm text-zinc-400 uppercase tracking-widest mb-1">Meilleur Score</div>
+                        <div className="text-4xl font-black text-[#00ff44]">{personalBest}</div>
+                      </div>
+
+                      <button
+                        onClick={logOut}
+                        className="flex items-center justify-center gap-2 w-full py-3 bg-transparent border border-red-500/50 text-red-400 hover:bg-red-500/10 transition-colors rounded-lg font-bold uppercase tracking-widest text-sm mt-4"
+                      >
+                        <LogOut size={18} /> Déconnexion
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-8 text-center gap-6">
+                      <div className="text-zinc-400">
+                        Connectez-vous pour sauvegarder votre meilleur score et apparaître dans le classement mondial.
+                      </div>
+                      <button
+                        onClick={signInWithGoogle}
+                        className="flex items-center gap-3 px-6 py-3 bg-white text-black font-bold rounded-lg hover:bg-zinc-200 transition-colors"
+                      >
+                        <svg className="w-5 h-5" viewBox="0 0 24 24">
+                          <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                          <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                          <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                          <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                        </svg>
+                        Connexion avec Google
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Leaderboard Section */}
+                <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-8">
+                  <h3 className="text-2xl font-bold text-white mb-6 flex items-center gap-3">
+                    <Trophy className="text-[#ffff00]" /> Top 10 Mondial
+                  </h3>
+                  
+                  <div className="space-y-4">
+                    {leaderboard.length > 0 ? (
+                      leaderboard.map((entry, index) => (
+                        <div key={entry.id} className="flex items-center justify-between bg-black/40 p-3 rounded-lg border border-zinc-800/50">
+                          <div className="flex items-center gap-4">
+                            <div className={`w-8 text-center font-black ${index === 0 ? 'text-yellow-400 text-xl' : index === 1 ? 'text-zinc-300 text-lg' : index === 2 ? 'text-amber-600 text-lg' : 'text-zinc-600'}`}>
+                              #{index + 1}
+                            </div>
+                            <div className="flex items-center gap-3">
+                              {entry.photoURL ? (
+                                <img src={entry.photoURL} alt="" className="w-8 h-8 rounded-full" referrerPolicy="no-referrer" />
+                              ) : (
+                                <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center">
+                                  <UserIcon size={16} className="text-zinc-500" />
+                                </div>
+                              )}
+                              <span className="text-white font-medium">{entry.displayName}</span>
+                            </div>
+                          </div>
+                          <div className="text-[#00f3ff] font-mono font-bold text-lg">
+                            {entry.personalBest}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-center py-8 text-zinc-500">
+                        Aucun score enregistré pour le moment.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
