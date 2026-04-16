@@ -19,8 +19,9 @@ export class Player {
     this.color = color;
   }
 
-  update(mouseX: number, mouseY: number, joystick: { active: boolean, dx: number, dy: number }, isAiming: boolean) {
+  update(mouseX: number, mouseY: number, joystick: { active: boolean, dx: number, dy: number }, isAiming: boolean) {  
     if (joystick.active) {
+      
       const speed = this.speedTimer > 0 ? 8 : 5;
       this.x += joystick.dx * speed;
       this.y += joystick.dy * speed;
