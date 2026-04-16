@@ -13,6 +13,57 @@ import { auth, db, signInWithGoogle, logOut } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { collection, doc, setDoc, getDoc, getDocs, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string;
+    email?: string | null;
+    emailVerified?: boolean;
+    isAnonymous?: boolean;
+    tenantId?: string | null;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
 // --- Main Application ---
 
 export default function App() {
@@ -72,7 +123,7 @@ export default function App() {
             setPersonalBest(0);
           }
         } catch (error) {
-          console.error("Error fetching user data:", error);
+          handleFirestoreError(error, OperationType.GET, `users/${currentUser.uid}`);
         }
       } else {
         setPersonalBest(0);
@@ -92,7 +143,7 @@ export default function App() {
       });
       setLeaderboard(scores);
     }, (error) => {
-      console.error("Error fetching leaderboard:", error);
+      handleFirestoreError(error, OperationType.LIST, 'users');
     });
     return () => unsubscribe();
   }, [isAuthReady]);
@@ -619,7 +670,7 @@ export default function App() {
                 setDoc(doc(db, 'users', user.uid), {
                   personalBest: state.score,
                   updatedAt: new Date().toISOString()
-                }, { merge: true }).catch(err => console.error("Error saving score:", err));
+                }, { merge: true }).catch(err => handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`));
               }
             }
           }
@@ -653,7 +704,7 @@ export default function App() {
                 setDoc(doc(db, 'users', user.uid), {
                   personalBest: state.score,
                   updatedAt: new Date().toISOString()
-                }, { merge: true }).catch(err => console.error("Error saving score:", err));
+                }, { merge: true }).catch(err => handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`));
               }
             }
             state.enemyProjectiles.splice(i, 1);
