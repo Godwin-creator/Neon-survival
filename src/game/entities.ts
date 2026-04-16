@@ -115,6 +115,57 @@ export class Projectile {
   }
 }
 
+export class EnemyProjectile {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  isHoming: boolean;
+  speed: number;
+
+  constructor(x: number, y: number, angle: number, isHoming: boolean = false, speed: number = 5) {
+    this.x = x;
+    this.y = y;
+    this.speed = speed;
+    this.vx = Math.cos(angle) * speed;
+    this.vy = Math.sin(angle) * speed;
+    this.life = 200;
+    this.isHoming = isHoming;
+  }
+
+  update(targetX?: number, targetY?: number) {
+    if (this.isHoming && targetX !== undefined && targetY !== undefined) {
+      const angleToTarget = Math.atan2(targetY - this.y, targetX - this.x);
+      const currentAngle = Math.atan2(this.vy, this.vx);
+      
+      let angleDiff = angleToTarget - currentAngle;
+      while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+      while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+      
+      const turnSpeed = 0.03;
+      const newAngle = currentAngle + Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), turnSpeed);
+      
+      this.vx = Math.cos(newAngle) * this.speed;
+      this.vy = Math.sin(newAngle) * this.speed;
+    }
+    this.x += this.vx;
+    this.y += this.vy;
+    this.life--;
+  }
+
+  draw(ctx: CanvasRenderingContext2D) {
+    ctx.save();
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = '#ff003c';
+    ctx.fillStyle = '#ff003c';
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
 export type PowerUpType = 'shield' | 'spread' | 'speed';
 export type Difficulty = 'easy' | 'medium' | 'hard';
 
@@ -196,6 +247,7 @@ export class Enemy {
   state: number;
   stateTimer: number;
   hitFlash: number;
+  projectilesToSpawn: EnemyProjectile[];
 
   constructor(x: number, y: number, speed: number, type: EnemyType) {
     this.x = x;
@@ -206,6 +258,7 @@ export class Enemy {
     this.state = 0;
     this.stateTimer = 0;
     this.hitFlash = 0;
+    this.projectilesToSpawn = [];
 
     switch (type) {
       case 'boss':
@@ -271,7 +324,24 @@ export class Enemy {
         this.y += Math.sin(this.angle) * this.speed * 3;
         this.stateTimer++;
         if (this.stateTimer > 30) {
-          this.state = 0;
+          this.state = 3; // Burst prep
+          this.stateTimer = 0;
+        }
+      } else if (this.state === 3) { // Burst prep
+        this.stateTimer++;
+        if (this.stateTimer > 30) {
+          this.state = 4; // Bursting
+          this.stateTimer = 0;
+        }
+      } else if (this.state === 4) { // Bursting
+        this.stateTimer++;
+        if (this.stateTimer % 10 === 0) {
+          // Fire homing projectile
+          const angle = targetAngle + (Math.random() - 0.5) * Math.PI / 2;
+          this.projectilesToSpawn.push(new EnemyProjectile(this.x, this.y, angle, true, 4));
+        }
+        if (this.stateTimer > 60) {
+          this.state = 0; // Back to chasing
           this.stateTimer = 0;
         }
       }

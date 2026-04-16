@@ -7,7 +7,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Pause, Play, Volume2, VolumeX, Trophy, LogOut, User as UserIcon } from 'lucide-react';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
-import { Player, Projectile, PowerUp, Enemy, Particle, PowerUpType, Difficulty, EnemyType } from './game/entities';
+import { Player, Projectile, PowerUp, Enemy, Particle, PowerUpType, Difficulty, EnemyType, EnemyProjectile } from './game/entities';
 import { audio } from './game/AudioEngine';
 import { auth, db, signInWithGoogle, logOut } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
@@ -100,6 +100,7 @@ export default function App() {
   const gameState = useRef({
     player: null as Player | null,
     projectiles: [] as Projectile[],
+    enemyProjectiles: [] as EnemyProjectile[],
     enemies: [] as Enemy[],
     powerUps: [] as PowerUp[],
     particles: [] as Particle[],
@@ -182,6 +183,7 @@ export default function App() {
     gameState.current = {
       player,
       projectiles: [],
+      enemyProjectiles: [],
       enemies: [],
       powerUps: [],
       particles: [],
@@ -582,6 +584,12 @@ export default function App() {
       for (let i = state.enemies.length - 1; i >= 0; i--) {
         const e = state.enemies[i];
         if (state.player) e.update(state.player.x, state.player.y);
+        
+        if (e.projectilesToSpawn && e.projectilesToSpawn.length > 0) {
+          state.enemyProjectiles.push(...e.projectilesToSpawn);
+          e.projectilesToSpawn = [];
+        }
+
         if (e.hitFlash > 0) e.hitFlash--;
         e.draw(ctx);
 
@@ -617,7 +625,48 @@ export default function App() {
           }
         }
 
-        // Projectile collision
+        // Enemy Projectiles
+      for (let i = state.enemyProjectiles.length - 1; i >= 0; i--) {
+        const p = state.enemyProjectiles[i];
+        p.update(state.player?.x, state.player?.y);
+        p.draw(ctx);
+
+        if (state.player) {
+          const dist = Math.hypot(state.player.x - p.x, state.player.y - p.y);
+          if (dist < state.player.size + 4) {
+            if (state.player.shieldTimer > 0) {
+              audio.playExplosion();
+              createExplosion(p.x, p.y, '#ff003c', 10);
+              state.shake = 5;
+              state.damageFlash = 1.0;
+              state.player.shieldTimer = 0;
+            } else {
+              audio.playGameOver();
+              state.isGameOver = true;
+              state.damageFlash = 1.0;
+              createExplosion(state.player.x, state.player.y, '#00f3ff', 50);
+              setIsGameOver(true);
+              fetchDeathMessage(state.score, state.wave);
+              
+              if (user && state.score > personalBest) {
+                setPersonalBest(state.score);
+                setDoc(doc(db, 'users', user.uid), {
+                  personalBest: state.score,
+                  updatedAt: new Date().toISOString()
+                }, { merge: true }).catch(err => console.error("Error saving score:", err));
+              }
+            }
+            state.enemyProjectiles.splice(i, 1);
+            continue;
+          }
+        }
+
+        if (p.life <= 0) {
+          state.enemyProjectiles.splice(i, 1);
+        }
+      }
+
+      // Projectile collision
         for (let j = state.projectiles.length - 1; j >= 0; j--) {
           const p = state.projectiles[j];
           const dist = Math.hypot(p.x - e.x, p.y - e.y);
